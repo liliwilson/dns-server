@@ -1,5 +1,8 @@
 use tokio::net::UdpSocket;
 
+mod parse;
+use crate::parse::parse_packet;
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
@@ -15,6 +18,9 @@ async fn main() -> std::io::Result<()> {
 
         println!("Got {} bytes from {}", bytes, src_addr);
         println!("Data: {:?}", &buf[..bytes]);
+        let (_remaining, parsed) = parse_packet(packet).unwrap(); // TODO no unwrap :shudder:
+
+        println!("parsed {:?}", parsed);
 
         // TODO all of the logic here
 
