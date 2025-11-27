@@ -80,7 +80,8 @@ pub struct Packet {
     header: Header,
     questions: Vec<Question>,
 }
-#[derive(Debug)]
+
+#[derive(Debug, PartialEq)]
 struct Header {
     /// Unique ID for the query
     id: u16,
@@ -104,9 +105,12 @@ struct Header {
     ar_count: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct Question {
     labels: Vec<String>,
     q_type: u16,
     q_class: u16,
 }
+
+#[path = "parse_tests.rs"]
+mod tests;
