@@ -1,6 +1,8 @@
 use nom::{
-    IResult, Offset,
+    IResult, Parser,
     bytes::complete::take,
+    combinator::map_res,
+    multi::count,
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
@@ -26,25 +28,11 @@ pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
 }
 
 fn parse_header(packet: Span) -> IResult<Span, Header> {
-    // TODO make this cleaner
-    let (remaining, id) = be_u16(packet)?;
-    let (remaining, flags) = be_u16(remaining)?;
-    let (remaining, q_count) = be_u16(remaining)?;
-    let (remaining, a_count) = be_u16(remaining)?;
-    let (remaining, ns_count) = be_u16(remaining)?;
-    let (remaining, ar_count) = be_u16(remaining)?;
-
-    Ok((
-        remaining,
-        Header {
-            id,
-            flags,
-            q_count,
-            a_count,
-            ns_count,
-            ar_count,
-        },
-    ))
+    map_res(
+        count(be_u16::<_, nom::error::Error<_>>, 6),
+        Header::try_from,
+    )
+    .parse(packet)
 }
 
 fn parse_questions<'a>(packet: Span, q_count: u16) -> IResult<Span, Vec<Question>> {
@@ -81,8 +69,7 @@ fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
         (remaining, labels_len) = be_u8(remaining)?;
     }
 
-    let (remaining, q_type) = be_u16(remaining)?;
-    let (remaining, q_class) = be_u16(remaining)?;
+    let (remaining, (q_type, q_class)) = (be_u16, be_u16).parse(remaining)?;
 
     Ok((
         remaining,
@@ -109,10 +96,8 @@ fn parse_answers<'a>(packet: Span, a_count: u16) -> IResult<Span, Vec<Answer>> {
 
 fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
     let (remaining, a_name) = parse_a_name(packet)?;
-    let (remaining, a_type) = be_u16(remaining)?;
-    let (remaining, a_class) = be_u16(remaining)?;
-    let (remaining, ttl) = be_u32(remaining)?;
-    let (remaining, rdlength) = be_u16(remaining)?;
+    let (remaining, (a_type, a_class, ttl, rdlength)) =
+        (be_u16, be_u16, be_u32, be_u16).parse(remaining)?;
     let (remaining, rdata) = take(rdlength)(remaining)?;
 
     Ok((
@@ -132,11 +117,12 @@ fn parse_a_name<'a>(packet: Span) -> IResult<Span, Name> {
     let (mut remaining, mut name_len) = be_u8(packet)?;
 
     // Check if the label name is compressed by looking at the two high bits
-    if (name_len & 0b1100_0000) == 0b1100_0000 {
+    let compression_mask = 0b11 << 6;
+    if (name_len & compression_mask) == compression_mask {
         let (output, offset_low) = be_u8(remaining)?;
         remaining = output;
 
-        let offset_high = name_len & 0b0011_1111;
+        let offset_high = name_len & !compression_mask;
         let offset = (offset_high as u16) << 8 | (offset_low as u16);
 
         Ok((remaining, Name::Offset(offset)))
@@ -186,6 +172,25 @@ struct Header {
     ns_count: u16,
     /// Number of additional resources
     ar_count: u16,
+}
+
+impl TryFrom<Vec<u16>> for Header {
+    type Error = &'static str;
+
+    /// Takes a Vec<u16> with exactly 6 elements and parses it into a Header
+    fn try_from(item: Vec<u16>) -> Result<Self, Self::Error> {
+        let [id, flags, q_count, a_count, ns_count, ar_count]: [u16; 6] =
+            item.try_into().map_err(|_| "expected 6 elements")?;
+
+        Ok(Header {
+            id,
+            flags,
+            q_count,
+            a_count,
+            ns_count,
+            ar_count,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq)]
