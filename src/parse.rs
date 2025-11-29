@@ -7,8 +7,7 @@ use std::{
 use nom::{
     IResult, Parser,
     bytes::complete::take,
-    combinator::{map, map_res},
-    multi::count,
+    combinator::map,
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
@@ -55,15 +54,26 @@ impl ParseContext {
 pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
     map(
         (parse_header, parse_questions, parse_answers),
-        |(h, q, a)| Packet::new(h, q, a),
+        |(header, questions, answers)| Packet {
+            header,
+            questions,
+            answers,
+        },
     )
     .parse(packet)
 }
 
 fn parse_header(packet: Span) -> IResult<Span, Header> {
-    let (res, header) = map_res(
-        count(be_u16::<_, nom::error::Error<_>>, 6),
-        Header::try_from,
+    let (res, header) = map(
+        (be_u16, be_u16, be_u16, be_u16, be_u16, be_u16),
+        |(id, flags, q_count, a_count, ns_count, ar_count)| Header {
+            id,
+            flags,
+            q_count,
+            a_count,
+            ns_count,
+            ar_count,
+        },
     )
     .parse(packet)?;
 
@@ -93,46 +103,15 @@ fn parse_questions<'a>(packet: Span) -> IResult<Span, Vec<Question>> {
 }
 
 fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
-    // offset is stored as - 1 because DNS compression does 0 indexing but the package does 1
-    // indexing
-    let offset = packet.get_column().saturating_sub(1) as u16;
-    let mut labels = Vec::new();
-
-    let (mut remaining, mut labels_len) = be_u8(packet)?;
-
-    // Keep pulling off parts of the domain name until we hit the root, which has len 0
-    while labels_len != 0 {
-        let (output, label) = take(labels_len)(remaining)?;
-        // TODO is this the correct way to overwrite `remaining` without shadowing it??
-        remaining = output;
-
-        // TODO actually do nom error handling yeesh... cloudflare outage :eyes_emoji:
-        let q_name = String::from_utf8(label.to_vec()).unwrap();
-        labels.push(q_name);
-
-        (remaining, labels_len) = be_u8(remaining)?;
-    }
-
-    let (remaining, (q_type, q_class)) = (be_u16, be_u16).parse(remaining)?;
-
-    // Wrap labels in an `Rc` before adding to the cache
-    let labels = Rc::new(labels);
-
-    // Add to the label cache
-    // Wrap in a closure so we drop the `remaining` borrow
-    {
-        let mut ctx = remaining.get_context_mut();
-        ctx.label_cache.insert(offset, labels.clone());
-    }
-
-    Ok((
-        remaining,
-        Question {
+    map(
+        (parse_literal_label, be_u16, be_u16),
+        |(labels, q_type, q_class)| Question {
             labels,
             q_type,
             q_class,
         },
-    ))
+    )
+    .parse(packet)
 }
 
 fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Answer>> {
@@ -149,9 +128,8 @@ fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Answer>> {
 }
 
 fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
-    let (remaining, a_name) = parse_a_name(packet)?;
-    let (remaining, (a_type, a_class, ttl, rdlength)) =
-        (be_u16, be_u16, be_u32, be_u16).parse(remaining)?;
+    let (remaining, (a_name, a_type, a_class, ttl, rdlength)) =
+        (parse_answer_name, be_u16, be_u16, be_u32, be_u16).parse(packet)?;
     let (remaining, rdata) = take(rdlength)(remaining)?;
 
     Ok((
@@ -162,68 +140,82 @@ fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
             a_class,
             ttl,
             rdlength,
-            rdata: rdata.to_vec(),
+            rdata: rdata.fragment().to_vec(),
         },
     ))
 }
 
-fn parse_a_name<'a>(packet: Span) -> IResult<Span, Label> {
-    let (mut remaining, mut name_len) = be_u8(packet)?;
+fn parse_answer_name<'a>(packet: Span) -> IResult<Span, Label> {
+    let offset = packet.first().copied().expect("packet should not be empty");
 
     // Check if the label name is compressed by looking at the two high bits
-    let compression_mask = 0b11 << 6;
-    if (name_len & compression_mask) == compression_mask {
-        let (output, offset_low) = be_u8(remaining)?;
-        remaining = output;
-
-        let offset_high = name_len & !compression_mask;
-        let name_offset = (offset_high as u16) << 8 | (offset_low as u16);
-
-        // Read from the label cache
-        // Wrap in a closure so we drop the `remaining` borrow
-        let labels;
-        {
-            let ctx = remaining.extra.borrow();
-            labels = ctx
-                .label_cache
-                .get(&name_offset)
-                .expect("offset should refer to a label")
-                .clone();
-        }
-
-        Ok((remaining, labels))
+    if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
+        parse_compressed_label(packet)
     } else {
         // Keep pulling off parts of the domain name until we hit the root, which has len 0
-        let mut labels = Vec::new();
-        while name_len != 0 {
-            let (output, label) = take(name_len)(remaining)?;
-            remaining = output;
-
-            let a_name = String::from_utf8(label.to_vec()).unwrap();
-            labels.push(a_name);
-
-            (remaining, name_len) = be_u8(remaining)?;
-        }
-
-        Ok((remaining, Rc::new(labels)))
+        parse_literal_label(packet)
     }
 }
+
+fn parse_compressed_label(packet: Span) -> IResult<Span, Label> {
+    // Grab the full offset, which is the next two bytes
+    let (remaining, mut name_offset) = be_u16(packet)?;
+
+    // Remove the two high bits to get the actual offset
+    name_offset = name_offset & !((COMPRESSION_MASK as u16) << 8);
+
+    // Read the value at `name_offset` from the label cache
+    // Wrap in a closure so we drop the `remaining` borrow
+    let labels;
+    {
+        let ctx = remaining.extra.borrow();
+        // TODO better error here when the expect fails
+        labels = ctx
+            .label_cache
+            .get(&name_offset)
+            .expect("offset should refer to a label")
+            .clone();
+    }
+
+    Ok((remaining, labels))
+}
+
+/// Given a packet where the next byte is the start of a label (label length),
+/// parse until we reach the root (label_len of 0).
+fn parse_literal_label(packet: Span) -> IResult<Span, Label> {
+    // Subtract 1 from the stored column, since nom_locate uses 1-indexing but
+    // DNS compression uses 0-indexing.
+    let offset = packet.get_column().saturating_sub(1) as u16;
+
+    let (mut remaining, mut name_len) = be_u8(packet)?;
+
+    let mut label_parts = Vec::new();
+    while name_len != 0 {
+        let (output, label) = take(name_len)(remaining)?;
+        remaining = output;
+
+        let name = String::from_utf8(label.to_vec()).unwrap();
+        label_parts.push(name);
+
+        (remaining, name_len) = be_u8(remaining)?;
+    }
+    let labels = Rc::new(label_parts);
+
+    {
+        let mut ctx = remaining.get_context_mut();
+        ctx.label_cache.insert(offset, labels.clone());
+    }
+
+    Ok((remaining, labels))
+}
+
+const COMPRESSION_MASK: u8 = 0b11 << 6;
 
 #[derive(Debug)]
 pub struct Packet {
     header: Header,
     questions: Vec<Question>,
     answers: Vec<Answer>,
-}
-
-impl Packet {
-    fn new(header: Header, questions: Vec<Question>, answers: Vec<Answer>) -> Packet {
-        Packet {
-            header,
-            questions,
-            answers,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -248,25 +240,6 @@ struct Header {
     ns_count: u16,
     /// Number of additional resources
     ar_count: u16,
-}
-
-impl TryFrom<Vec<u16>> for Header {
-    type Error = &'static str;
-
-    /// Takes a Vec<u16> with exactly 6 elements and parses it into a Header
-    fn try_from(item: Vec<u16>) -> Result<Self, Self::Error> {
-        let [id, flags, q_count, a_count, ns_count, ar_count]: [u16; 6] =
-            item.try_into().map_err(|_| "expected 6 elements")?;
-
-        Ok(Header {
-            id,
-            flags,
-            q_count,
-            a_count,
-            ns_count,
-            ar_count,
-        })
-    }
 }
 
 // We use an `Rc` here because a label could be shared across multiple questions/answers due to
