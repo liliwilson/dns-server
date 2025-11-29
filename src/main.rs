@@ -1,7 +1,7 @@
 use tokio::net::UdpSocket;
 
 mod parse;
-use crate::parse::parse_packet;
+use crate::parse::{Span, parse_packet};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -18,7 +18,8 @@ async fn main() -> std::io::Result<()> {
 
         println!("Got {} bytes from {}", bytes, src_addr);
         println!("Data: {:?}", &buf[..bytes]);
-        let (_remaining, parsed) = parse_packet(packet).unwrap(); // TODO no unwrap :shudder:
+
+        let (_remaining, parsed) = parse_packet(Span::new(packet)).unwrap(); // TODO no unwrap :shudder:
 
         println!("parsed {:?}", parsed);
 

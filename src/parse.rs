@@ -1,9 +1,13 @@
 use nom::{
-    IResult,
+    IResult, Offset,
     bytes::complete::take,
     number::complete::{be_u8, be_u16, be_u32},
 };
-pub fn parse_packet(packet: &[u8]) -> IResult<&[u8], Packet> {
+use nom_locate::LocatedSpan;
+// We wrap the packet in this to keep track of offset information in order to decompress it
+pub type Span<'a> = LocatedSpan<&'a [u8]>;
+
+pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
     // Parse 96 bits of the header
     let (remaining, header) = parse_header(packet)?;
     // Parse questions
@@ -21,7 +25,7 @@ pub fn parse_packet(packet: &[u8]) -> IResult<&[u8], Packet> {
     ))
 }
 
-fn parse_header(packet: &[u8]) -> IResult<&[u8], Header> {
+fn parse_header(packet: Span) -> IResult<Span, Header> {
     // TODO make this cleaner
     let (remaining, id) = be_u16(packet)?;
     let (remaining, flags) = be_u16(remaining)?;
@@ -43,7 +47,7 @@ fn parse_header(packet: &[u8]) -> IResult<&[u8], Header> {
     ))
 }
 
-fn parse_questions(packet: &[u8], q_count: u16) -> IResult<&[u8], Vec<Question>> {
+fn parse_questions<'a>(packet: Span, q_count: u16) -> IResult<Span, Vec<Question>> {
     let mut questions = Vec::new();
     let mut remaining = packet;
 
@@ -56,8 +60,12 @@ fn parse_questions(packet: &[u8], q_count: u16) -> IResult<&[u8], Vec<Question>>
     Ok((remaining, questions))
 }
 
-fn parse_question(packet: &[u8]) -> IResult<&[u8], Question> {
+fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
+    // offset is stored as - 1 because DNS compression does 0 indexing but the package does 1
+    // indexing
+    let offset = packet.get_column().saturating_sub(1) as u16;
     let mut labels = Vec::new();
+
     let (mut remaining, mut labels_len) = be_u8(packet)?;
 
     // Keep pulling off parts of the domain name until we hit the root, which has len 0
@@ -79,14 +87,14 @@ fn parse_question(packet: &[u8]) -> IResult<&[u8], Question> {
     Ok((
         remaining,
         Question {
-            labels,
+            labels: Name::Labels { labels, offset },
             q_type,
             q_class,
         },
     ))
 }
 
-fn parse_answers(packet: &[u8], a_count: u16) -> IResult<&[u8], Vec<Answer>> {
+fn parse_answers<'a>(packet: Span, a_count: u16) -> IResult<Span, Vec<Answer>> {
     let mut answers = Vec::new();
     let mut remaining = packet;
 
@@ -99,7 +107,7 @@ fn parse_answers(packet: &[u8], a_count: u16) -> IResult<&[u8], Vec<Answer>> {
     Ok((remaining, answers))
 }
 
-fn parse_answer(packet: &[u8]) -> IResult<&[u8], Answer> {
+fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
     let (remaining, a_name) = parse_a_name(packet)?;
     let (remaining, a_type) = be_u16(remaining)?;
     let (remaining, a_class) = be_u16(remaining)?;
@@ -120,7 +128,7 @@ fn parse_answer(packet: &[u8]) -> IResult<&[u8], Answer> {
     ))
 }
 
-fn parse_a_name(packet: &[u8]) -> IResult<&[u8], Name> {
+fn parse_a_name<'a>(packet: Span) -> IResult<Span, Name> {
     let (mut remaining, mut name_len) = be_u8(packet)?;
 
     // Check if the label name is compressed by looking at the two high bits
@@ -145,7 +153,7 @@ fn parse_a_name(packet: &[u8]) -> IResult<&[u8], Name> {
             (remaining, name_len) = be_u8(remaining)?;
         }
 
-        Ok((remaining, Name::Labels(labels)))
+        Ok((remaining, Name::Labels { labels, offset: 0 }))
     }
 }
 
@@ -182,7 +190,7 @@ struct Header {
 
 #[derive(Debug, PartialEq)]
 struct Question {
-    labels: Vec<String>,
+    labels: Name,
     q_type: u16,
     q_class: u16,
 }
@@ -199,7 +207,10 @@ struct Answer {
 
 #[derive(Debug, PartialEq)]
 enum Name {
-    Labels(Vec<String>),
+    Labels {
+        labels: Vec<String>,
+        offset: u16,
+    },
     /// When we use compression, this represents an offset into the original packet
     Offset(u16),
 }
