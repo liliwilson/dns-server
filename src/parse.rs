@@ -1,44 +1,88 @@
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    collections::HashMap,
+    rc::Rc,
+};
+
 use nom::{
     IResult, Parser,
     bytes::complete::take,
-    combinator::map_res,
+    combinator::{map, map_res},
     multi::count,
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
-// We wrap the packet in this to keep track of offset information in order to decompress it
-pub type Span<'a> = LocatedSpan<&'a [u8]>;
 
-pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
-    // Parse 96 bits of the header
-    let (remaining, header) = parse_header(packet)?;
-    // Parse questions
-    let (remaining, questions) = parse_questions(remaining, header.q_count)?;
-    // Parse answers
-    let (remaining, answers) = parse_answers(remaining, header.a_count)?;
+/// We wrap the packet in `Span` to keep track of offset information to decompress as we parse.
+/// Using Rc + RefCell because nom_locate clones the `extra` every time, but we  don't actually want
+/// to clone the full hashmap.
+pub type Span<'a> = LocatedSpan<&'a [u8], Rc<RefCell<ParseContext>>>;
 
-    Ok((
-        remaining,
-        Packet {
-            header,
-            questions,
-            answers,
-        },
-    ))
+/// Define a trait to make it easier to grab the context `extra` from Span,
+/// which is defined in an external crate (hence the new trait).
+pub trait HasParseContext {
+    fn get_context(&self) -> Ref<'_, ParseContext>;
+
+    fn get_context_mut(&self) -> RefMut<'_, ParseContext>;
 }
 
-fn parse_header(packet: Span) -> IResult<Span, Header> {
-    map_res(
-        count(be_u16::<_, nom::error::Error<_>>, 6),
-        Header::try_from,
+impl HasParseContext for Span<'_> {
+    fn get_context(&self) -> Ref<'_, ParseContext> {
+        self.extra.borrow()
+    }
+
+    fn get_context_mut(&self) -> RefMut<'_, ParseContext> {
+        self.extra.borrow_mut()
+    }
+}
+
+#[derive(Default, Debug)]
+pub struct ParseContext {
+    q_count: u16,
+    a_count: u16,
+    ns_count: u16,
+    ar_count: u16,
+    /// We use this map to track labels at offsets so we can decompress as we parse.
+    label_cache: HashMap<u16, Label>,
+}
+
+impl ParseContext {
+    pub fn new() -> Rc<RefCell<ParseContext>> {
+        Rc::new(RefCell::new(ParseContext::default()))
+    }
+}
+
+pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
+    map(
+        (parse_header, parse_questions, parse_answers),
+        |(h, q, a)| Packet::new(h, q, a),
     )
     .parse(packet)
 }
 
-fn parse_questions<'a>(packet: Span, q_count: u16) -> IResult<Span, Vec<Question>> {
-    let mut questions = Vec::new();
-    let mut remaining = packet;
+fn parse_header(packet: Span) -> IResult<Span, Header> {
+    let (res, header) = map_res(
+        count(be_u16::<_, nom::error::Error<_>>, 6),
+        Header::try_from,
+    )
+    .parse(packet)?;
 
+    // Update the parse context with header values
+    {
+        let mut ctx = res.get_context_mut();
+        ctx.q_count = header.q_count;
+        ctx.a_count = header.a_count;
+        ctx.ns_count = header.ns_count;
+        ctx.ar_count = header.ar_count;
+    }
+
+    Ok((res, header))
+}
+
+fn parse_questions<'a>(packet: Span) -> IResult<Span, Vec<Question>> {
+    let q_count = packet.get_context().q_count;
+
+    let (mut remaining, mut questions) = (packet, Vec::new());
     for _ in 0..q_count {
         let (output, question) = parse_question(remaining)?;
         remaining = output;
@@ -71,20 +115,30 @@ fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
 
     let (remaining, (q_type, q_class)) = (be_u16, be_u16).parse(remaining)?;
 
+    // Wrap labels in an `Rc` before adding to the cache
+    let labels = Rc::new(labels);
+
+    // Add to the label cache
+    // Wrap in a closure so we drop the `remaining` borrow
+    {
+        let mut ctx = remaining.get_context_mut();
+        ctx.label_cache.insert(offset, labels.clone());
+    }
+
     Ok((
         remaining,
         Question {
-            labels: Name::Labels { labels, offset },
+            labels,
             q_type,
             q_class,
         },
     ))
 }
 
-fn parse_answers<'a>(packet: Span, a_count: u16) -> IResult<Span, Vec<Answer>> {
-    let mut answers = Vec::new();
-    let mut remaining = packet;
+fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Answer>> {
+    let a_count = packet.get_context().a_count;
 
+    let (mut remaining, mut answers) = (packet, Vec::new());
     for _ in 0..a_count {
         let (output, answer) = parse_answer(remaining)?;
         remaining = output;
@@ -113,7 +167,7 @@ fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
     ))
 }
 
-fn parse_a_name<'a>(packet: Span) -> IResult<Span, Name> {
+fn parse_a_name<'a>(packet: Span) -> IResult<Span, Label> {
     let (mut remaining, mut name_len) = be_u8(packet)?;
 
     // Check if the label name is compressed by looking at the two high bits
@@ -123,9 +177,21 @@ fn parse_a_name<'a>(packet: Span) -> IResult<Span, Name> {
         remaining = output;
 
         let offset_high = name_len & !compression_mask;
-        let offset = (offset_high as u16) << 8 | (offset_low as u16);
+        let name_offset = (offset_high as u16) << 8 | (offset_low as u16);
 
-        Ok((remaining, Name::Offset(offset)))
+        // Read from the label cache
+        // Wrap in a closure so we drop the `remaining` borrow
+        let labels;
+        {
+            let ctx = remaining.extra.borrow();
+            labels = ctx
+                .label_cache
+                .get(&name_offset)
+                .expect("offset should refer to a label")
+                .clone();
+        }
+
+        Ok((remaining, labels))
     } else {
         // Keep pulling off parts of the domain name until we hit the root, which has len 0
         let mut labels = Vec::new();
@@ -139,7 +205,7 @@ fn parse_a_name<'a>(packet: Span) -> IResult<Span, Name> {
             (remaining, name_len) = be_u8(remaining)?;
         }
 
-        Ok((remaining, Name::Labels { labels, offset: 0 }))
+        Ok((remaining, Rc::new(labels)))
     }
 }
 
@@ -148,6 +214,16 @@ pub struct Packet {
     header: Header,
     questions: Vec<Question>,
     answers: Vec<Answer>,
+}
+
+impl Packet {
+    fn new(header: Header, questions: Vec<Question>, answers: Vec<Answer>) -> Packet {
+        Packet {
+            header,
+            questions,
+            answers,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -193,31 +269,25 @@ impl TryFrom<Vec<u16>> for Header {
     }
 }
 
+// We use an `Rc` here because a label could be shared across multiple questions/answers due to
+// compression
+type Label = Rc<Vec<String>>;
+
 #[derive(Debug, PartialEq)]
 struct Question {
-    labels: Name,
+    labels: Label,
     q_type: u16,
     q_class: u16,
 }
 
 #[derive(Debug, PartialEq)]
 struct Answer {
-    a_name: Name,
+    a_name: Label,
     a_type: u16,
     a_class: u16,
     ttl: u32,
     rdlength: u16,
     rdata: Vec<u8>,
-}
-
-#[derive(Debug, PartialEq)]
-enum Name {
-    Labels {
-        labels: Vec<String>,
-        offset: u16,
-    },
-    /// When we use compression, this represents an offset into the original packet
-    Offset(u16),
 }
 
 #[path = "parse_tests.rs"]

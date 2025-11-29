@@ -58,14 +58,15 @@ fn build_query(query_domains: Vec<String>) -> Vec<u8> {
 
 #[test]
 fn fail_on_empty_message() {
-    let result = parse_packet(Span::new(&[]));
+    let result = parse_packet(Span::new_extra(&[], ParseContext::new()));
     assert!(result.is_err()); // TODO test more carefully
 }
 
 #[test]
 fn can_parse_heading() {
     let query = build_query(Vec::new());
-    let (_, packet) = parse_packet(Span::new(&query)).expect("Packet should parse");
+    let (_, packet) =
+        parse_packet(Span::new_extra(&query, ParseContext::new())).expect("Packet should parse");
 
     assert_eq!(
         packet.header,
@@ -83,7 +84,8 @@ fn can_parse_heading() {
 #[test]
 fn can_parse_single_question() {
     let query = build_query(vec!["www.google.com".to_string()]);
-    let (_, packet) = parse_packet(Span::new(&query)).expect("Packet should parse");
+    let (_, packet) =
+        parse_packet(Span::new_extra(&query, ParseContext::new())).expect("Packet should parse");
 
     assert_eq!(
         packet.header,
@@ -101,10 +103,7 @@ fn can_parse_single_question() {
     assert_eq!(
         packet.questions[0],
         Question {
-            labels: Name::Labels {
-                labels: vec!["www".to_string(), "google".to_string(), "com".to_string()],
-                offset: 12
-            },
+            labels: vec!["www".to_string(), "google".to_string(), "com".to_string()].into(),
             q_type: 1,
             q_class: 1
         }
@@ -117,7 +116,8 @@ fn can_parse_multiple_questions() {
         "www.google.com".to_string(),
         "wow.i.love.dns".to_string(),
     ]);
-    let (_, packet) = parse_packet(Span::new(&query)).expect("Packet should parse");
+    let (_, packet) =
+        parse_packet(Span::new_extra(&query, ParseContext::new())).expect("Packet should parse");
 
     assert_eq!(
         packet.header,
@@ -135,10 +135,7 @@ fn can_parse_multiple_questions() {
     assert_eq!(
         packet.questions[0],
         Question {
-            labels: Name::Labels {
-                labels: vec!["www".to_string(), "google".to_string(), "com".to_string()],
-                offset: 12
-            },
+            labels: vec!["www".to_string(), "google".to_string(), "com".to_string()].into(),
             q_type: 1,
             q_class: 1
         }
@@ -147,15 +144,13 @@ fn can_parse_multiple_questions() {
     assert_eq!(
         packet.questions[1],
         Question {
-            labels: Name::Labels {
-                labels: vec![
-                    "wow".to_string(),
-                    "i".to_string(),
-                    "love".to_string(),
-                    "dns".to_string()
-                ],
-                offset: 32
-            },
+            labels: vec![
+                "wow".to_string(),
+                "i".to_string(),
+                "love".to_string(),
+                "dns".to_string()
+            ]
+            .into(),
             q_type: 1,
             q_class: 1
         }
