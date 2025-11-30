@@ -183,9 +183,7 @@ fn parse_compressed_label(packet: Span) -> IResult<Span, Label> {
 /// Given a packet where the next byte is the start of a label (label length),
 /// parse until we reach the root (label_len of 0).
 fn parse_literal_label(packet: Span) -> IResult<Span, Label> {
-    // Subtract 1 from the stored column, since nom_locate uses 1-indexing but
-    // DNS compression uses 0-indexing.
-    let offset = packet.get_column().saturating_sub(1) as u16;
+    let offset = packet.location_offset() as u16;
 
     let (mut remaining, mut name_len) = be_u8(packet)?;
 
