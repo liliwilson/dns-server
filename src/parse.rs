@@ -42,7 +42,7 @@ pub struct ParseContext {
     ns_count: u16,
     ar_count: u16,
     /// We use this map to track labels at offsets so we can decompress as we parse.
-    label_cache: HashMap<u16, Label>,
+    label_cache: BTreeMap<u16, DomainName>,
 }
 
 impl ParseContext {
@@ -114,12 +114,12 @@ fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
     .parse(packet)
 }
 
-fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Answer>> {
+fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
     let a_count = packet.get_context().a_count;
 
     let (mut remaining, mut answers) = (packet, Vec::new());
     for _ in 0..a_count {
-        let (output, answer) = parse_answer(remaining)?;
+        let (output, answer) = parse_resource(remaining)?;
         remaining = output;
         answers.push(answer);
     }
@@ -127,25 +127,32 @@ fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Answer>> {
     Ok((remaining, answers))
 }
 
-fn parse_answer<'a>(packet: Span) -> IResult<Span, Answer> {
-    let (remaining, (a_name, a_type, a_class, ttl, rdlength)) =
-        (parse_answer_name, be_u16, be_u16, be_u32, be_u16).parse(packet)?;
-    let (remaining, rdata) = take(rdlength)(remaining)?;
+fn parse_resource<'a>(packet: Span) -> IResult<Span, Resource> {
+    let (remaining, (name, r_type, class, ttl, rdlength)) = (
+        parse_resource_name,
+        parse_record_type,
+        be_u16,
+        be_u32,
+        be_u16,
+    )
+        .parse(packet)?;
+
+    let (remaining, rdata) = parse_record_data(remaining, rdlength, r_type)?;
 
     Ok((
         remaining,
-        Answer {
-            a_name,
-            a_type,
-            a_class,
+        Resource {
+            name,
+            r_type,
+            class,
             ttl,
             rdlength,
-            rdata: rdata.fragment().to_vec(),
+            rdata,
         },
     ))
 }
 
-fn parse_answer_name<'a>(packet: Span) -> IResult<Span, Label> {
+fn parse_resource_name<'a>(packet: Span) -> IResult<Span, DomainName> {
     let offset = packet.first().copied().expect("packet should not be empty");
 
     // Check if the label name is compressed by looking at the two high bits
@@ -157,7 +164,52 @@ fn parse_answer_name<'a>(packet: Span) -> IResult<Span, Label> {
     }
 }
 
-fn parse_compressed_label(packet: Span) -> IResult<Span, Label> {
+fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
+    map(be_u16, |rtype| match rtype {
+        1 => RecordType::A,
+        2 => RecordType::NS,
+        28 => RecordType::AAAA,
+        _ => RecordType::UNSUPPORTED,
+    })
+    .parse(packet)
+}
+
+fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult<Span, RecordData> {
+    let (remaining, rdata);
+    let record_data = match r_type {
+        RecordType::A => {
+            (remaining, rdata) = take(rdlength)(packet)?;
+            let rdata = rdata.fragment().to_vec();
+
+            RecordData::AddressData(IPAddress::IPv4(
+                rdata
+                    .as_slice()
+                    .try_into()
+                    .expect("Vec must have exactly 4 elements"), // TODO better
+            ))
+        }
+        RecordType::AAAA => {
+            (remaining, rdata) = take(rdlength)(packet)?;
+            let rdata = rdata.fragment().to_vec();
+            RecordData::AddressData(IPAddress::IPv6(
+                rdata
+                    .as_slice()
+                    .try_into()
+                    .expect("Vec must have exactly 6 elements"), // TODO better
+            ))
+        }
+        RecordType::NS => {
+            let (output, domain_name) = parse_resource_name(packet)?;
+            remaining = output;
+            RecordData::NameServerData(domain_name)
+        }
+        RecordType::UNSUPPORTED => todo!(),
+    };
+
+    Ok((remaining, record_data))
+}
+
+fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
     // Grab the full offset, which is the next two bytes
     let (remaining, mut name_offset) = be_u16(packet)?;
 
@@ -182,7 +234,7 @@ fn parse_compressed_label(packet: Span) -> IResult<Span, Label> {
 
 /// Given a packet where the next byte is the start of a label (label length),
 /// parse until we reach the root (label_len of 0).
-fn parse_literal_label(packet: Span) -> IResult<Span, Label> {
+fn parse_literal_label(packet: Span) -> IResult<Span, DomainName> {
     let offset = packet.location_offset() as u16;
 
     let (mut remaining, mut name_len) = be_u8(packet)?;
@@ -213,7 +265,7 @@ const COMPRESSION_MASK: u8 = 0b11 << 6;
 pub struct Packet {
     header: Header,
     questions: Vec<Question>,
-    answers: Vec<Answer>,
+    answers: Vec<Resource>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -242,23 +294,43 @@ struct Header {
 
 // We use an `Rc` here because a label could be shared across multiple questions/answers due to
 // compression
-type Label = Rc<Vec<String>>;
+type DomainName = Rc<Vec<String>>;
 
 #[derive(Debug, PartialEq)]
 struct Question {
-    labels: Label,
+    labels: DomainName,
     q_type: u16,
     q_class: u16,
 }
 
 #[derive(Debug, PartialEq)]
-struct Answer {
-    a_name: Label,
-    a_type: u16,
-    a_class: u16,
+struct Resource {
+    name: DomainName,
+    r_type: RecordType,
+    class: u16,
     ttl: u32,
     rdlength: u16,
-    rdata: Vec<u8>,
+    rdata: RecordData,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)] // TODO is clone ok
+enum RecordType {
+    A,
+    AAAA,
+    NS,
+    UNSUPPORTED,
+}
+
+#[derive(Debug, PartialEq)]
+enum RecordData {
+    AddressData(IPAddress),
+    NameServerData(DomainName),
+}
+
+#[derive(Debug, PartialEq)]
+enum IPAddress {
+    IPv4([u8; 4]),
+    IPv6([u8; 16]),
 }
 
 #[path = "parse_tests.rs"]
