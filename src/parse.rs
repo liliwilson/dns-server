@@ -50,6 +50,14 @@ impl ParseContext {
     pub fn new() -> Rc<RefCell<ParseContext>> {
         Rc::new(RefCell::new(ParseContext::default()))
     }
+
+    /// Given a header, populate the count values in the context
+    fn populate_with_header(&mut self, header: &Header) {
+        self.q_count = header.q_count;
+        self.a_count = header.a_count;
+        self.ns_count = header.ns_count;
+        self.ar_count = header.ar_count;
+    }
 }
 
 pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
@@ -87,13 +95,7 @@ fn parse_header(packet: Span) -> IResult<Span, Header> {
     .parse(packet)?;
 
     // Update the parse context with header values
-    {
-        let mut ctx = res.get_context_mut();
-        ctx.q_count = header.q_count;
-        ctx.a_count = header.a_count;
-        ctx.ns_count = header.ns_count;
-        ctx.ar_count = header.ar_count;
-    }
+    res.get_context_mut().populate_with_header(&header);
 
     Ok((res, header))
 }
