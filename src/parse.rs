@@ -1,13 +1,13 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::HashMap,
+    collections::BTreeMap,
     rc::Rc,
 };
 
 use nom::{
     IResult, Parser,
     bytes::complete::take,
-    combinator::map,
+    combinator::{map, map_res},
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
@@ -104,7 +104,7 @@ fn parse_questions<'a>(packet: Span) -> IResult<Span, Vec<Question>> {
 
 fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
     map(
-        (parse_literal_label, be_u16, be_u16),
+        (parse_resource_name, be_u16, be_u16),
         |(labels, q_type, q_class)| Question {
             labels,
             q_type,
@@ -153,15 +153,46 @@ fn parse_resource<'a>(packet: Span) -> IResult<Span, Resource> {
 }
 
 fn parse_resource_name<'a>(packet: Span) -> IResult<Span, DomainName> {
-    let offset = packet.first().copied().expect("packet should not be empty");
+    let name_offset = packet.location_offset() as u16;
+    let mut name_parts = Vec::new();
+    let mut remaining = packet;
 
     // Check if the label name is compressed by looking at the two high bits
-    if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
-        parse_compressed_label(packet)
-    } else {
-        // Keep pulling off parts of the domain name until we hit the root, which has len 0
-        parse_literal_label(packet)
+    let mut offset = remaining
+        .first()
+        .copied()
+        .expect("packet should not be empty");
+
+    while (offset & COMPRESSION_MASK) != COMPRESSION_MASK && offset != 0 {
+        println!("in here w offset {offset:?}");
+        let (output, label_part) = parse_literal_label(remaining)?;
+        remaining = output;
+        name_parts.push(label_part);
+        offset = remaining
+            .first()
+            .copied()
+            .expect("packet should not be empty");
     }
+
+    if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
+        let (output, extra) = parse_compressed_label(remaining)?;
+        remaining = output;
+        name_parts.extend(extra.as_ref().iter().cloned()); // TODO verify
+    } else {
+        // consume the null terminator for the literal label
+        let (output, _) = be_u8(remaining)?;
+        remaining = output;
+    }
+
+    let labels = Rc::new(name_parts);
+
+    {
+        println!("inserting {:?} at {:?}", labels, name_offset);
+        let mut ctx = remaining.get_context_mut();
+        ctx.label_cache.insert(name_offset, labels.clone());
+    }
+
+    Ok((remaining, labels))
 }
 
 fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
@@ -217,48 +248,59 @@ fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
     name_offset = name_offset & !((COMPRESSION_MASK as u16) << 8);
 
     // Read the value at `name_offset` from the label cache
-    // Wrap in a closure so we drop the `remaining` borrow
-    let labels;
-    {
-        let ctx = remaining.extra.borrow();
-        // TODO better error here when the expect fails
-        labels = ctx
-            .label_cache
-            .get(&name_offset)
-            .expect("offset should refer to a label")
-            .clone();
-    }
+    let ctx = remaining.extra.borrow_mut();
+    let labels = get_label_from_cache(ctx, name_offset);
 
     Ok((remaining, labels))
+}
+
+fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> DomainName {
+    let (label_offset, label) = ctx
+        .label_cache
+        .range(..=offset)
+        .next_back()
+        .expect("offset should be valid");
+
+    // If we have an exact match in the cache, return it
+    if label_offset == &offset {
+        return label.clone(); // TODO clone ok bc Rc
+    }
+
+    // Otherwise if we don't have key explicitly, it's a sub-part of another label
+    let mut amount = offset - label_offset;
+
+    let label = label.as_ref().clone();
+    let mut label_iter = label.into_iter().peekable();
+
+    while let Some(label_part) = label_iter.peek() {
+        if amount <= 0 {
+            break;
+        }
+        amount -= label_part.len() as u16 + 1;
+        label_iter.next(); // consume this element
+    }
+
+    let leftover: Rc<Vec<String>> = label_iter.collect::<Vec<String>>().into();
+
+    // Add to the cache; it's likely that other parts of the answer might use this
+    ctx.label_cache.insert(offset, leftover.clone());
+
+    return leftover;
 }
 
 /// Given a packet where the next byte is the start of a label (label length),
-/// parse until we reach the root (label_len of 0).
-fn parse_literal_label(packet: Span) -> IResult<Span, DomainName> {
-    let offset = packet.location_offset() as u16;
+/// parse that part of the label and return a String.
+fn parse_literal_label(packet: Span) -> IResult<Span, String> {
+    let (remaining, name_len) = be_u8(packet)?;
 
-    let (mut remaining, mut name_len) = be_u8(packet)?;
-
-    let mut label_parts = Vec::new();
-    while name_len != 0 {
-        let (output, label) = take(name_len)(remaining)?;
-        remaining = output;
-
-        let name = String::from_utf8(label.to_vec()).unwrap();
-        label_parts.push(name);
-
-        (remaining, name_len) = be_u8(remaining)?;
-    }
-    let labels = Rc::new(label_parts);
-
-    {
-        let mut ctx = remaining.get_context_mut();
-        ctx.label_cache.insert(offset, labels.clone());
-    }
-
-    Ok((remaining, labels))
+    // TODO check error here
+    map_res(take(name_len), |output: Span| {
+        String::from_utf8(output.fragment().to_vec())
+    })
+    .parse(remaining)
 }
 
+/// The upper two bits of the first label byte being set indicate that compression is being used
 const COMPRESSION_MASK: u8 = 0b11 << 6;
 
 #[derive(Debug)]
