@@ -8,6 +8,7 @@ use nom::{
     IResult, Parser,
     bytes::complete::take,
     combinator::{map, map_res},
+    multi::count,
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
@@ -53,11 +54,19 @@ impl ParseContext {
 
 pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
     map(
-        (parse_header, parse_questions, parse_answers),
-        |(header, questions, answers)| Packet {
+        (
+            parse_header,
+            parse_questions,
+            parse_answers,
+            parse_authorities,
+            parse_additional_resources,
+        ),
+        |(header, questions, answers, authorities, additional_resources)| Packet {
             header,
             questions,
             answers,
+            authorities,
+            additional_resources,
         },
     )
     .parse(packet)
@@ -90,16 +99,8 @@ fn parse_header(packet: Span) -> IResult<Span, Header> {
 }
 
 fn parse_questions<'a>(packet: Span) -> IResult<Span, Vec<Question>> {
-    let q_count = packet.get_context().q_count;
-
-    let (mut remaining, mut questions) = (packet, Vec::new());
-    for _ in 0..q_count {
-        let (output, question) = parse_question(remaining)?;
-        remaining = output;
-        questions.push(question);
-    }
-
-    Ok((remaining, questions))
+    let q_count = packet.get_context().q_count as usize;
+    count(parse_question, q_count).parse(packet)
 }
 
 fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
@@ -115,16 +116,18 @@ fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
 }
 
 fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
-    let a_count = packet.get_context().a_count;
+    let a_count = packet.get_context().a_count as usize;
+    count(parse_resource, a_count).parse(packet)
+}
 
-    let (mut remaining, mut answers) = (packet, Vec::new());
-    for _ in 0..a_count {
-        let (output, answer) = parse_resource(remaining)?;
-        remaining = output;
-        answers.push(answer);
-    }
+fn parse_authorities<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
+    let ns_count = packet.get_context().ns_count as usize;
+    count(parse_resource, ns_count).parse(packet)
+}
 
-    Ok((remaining, answers))
+fn parse_additional_resources<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
+    let ar_count = packet.get_context().ar_count as usize;
+    count(parse_resource, ar_count).parse(packet)
 }
 
 fn parse_resource<'a>(packet: Span) -> IResult<Span, Resource> {
@@ -308,6 +311,8 @@ pub struct Packet {
     header: Header,
     questions: Vec<Question>,
     answers: Vec<Resource>,
+    authorities: Vec<Resource>,
+    additional_resources: Vec<Resource>,
 }
 
 #[derive(Debug, PartialEq)]
