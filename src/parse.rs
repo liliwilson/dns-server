@@ -100,12 +100,12 @@ fn parse_header(packet: Span) -> IResult<Span, Header> {
     Ok((res, header))
 }
 
-fn parse_questions<'a>(packet: Span) -> IResult<Span, Vec<Question>> {
+fn parse_questions(packet: Span) -> IResult<Span, Vec<Question>> {
     let q_count = packet.get_context().q_count as usize;
     count(parse_question, q_count).parse(packet)
 }
 
-fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
+fn parse_question(packet: Span) -> IResult<Span, Question> {
     map(
         (parse_resource_name, be_u16, be_u16),
         |(labels, q_type, q_class)| Question {
@@ -117,22 +117,22 @@ fn parse_question<'a>(packet: Span) -> IResult<Span, Question> {
     .parse(packet)
 }
 
-fn parse_answers<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_answers(packet: Span) -> IResult<Span, Vec<Resource>> {
     let a_count = packet.get_context().a_count as usize;
     count(parse_resource, a_count).parse(packet)
 }
 
-fn parse_authorities<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_authorities(packet: Span) -> IResult<Span, Vec<Resource>> {
     let ns_count = packet.get_context().ns_count as usize;
     count(parse_resource, ns_count).parse(packet)
 }
 
-fn parse_additional_resources<'a>(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_additional_resources(packet: Span) -> IResult<Span, Vec<Resource>> {
     let ar_count = packet.get_context().ar_count as usize;
     count(parse_resource, ar_count).parse(packet)
 }
 
-fn parse_resource<'a>(packet: Span) -> IResult<Span, Resource> {
+fn parse_resource(packet: Span) -> IResult<Span, Resource> {
     let (remaining, (name, r_type, class, ttl, rdlength)) = (
         parse_resource_name,
         parse_record_type,
@@ -157,7 +157,7 @@ fn parse_resource<'a>(packet: Span) -> IResult<Span, Resource> {
     ))
 }
 
-fn parse_resource_name<'a>(packet: Span) -> IResult<Span, DomainName> {
+fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
     let name_offset = packet.location_offset() as u16;
     let mut name_parts = Vec::new();
     let mut remaining = packet;
