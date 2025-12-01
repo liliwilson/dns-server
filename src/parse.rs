@@ -7,7 +7,8 @@ use std::{
 use nom::{
     IResult, Parser,
     bytes::complete::take,
-    combinator::{map, map_res},
+    combinator::{map, map_res, peek, verify},
+    error::{Error, ErrorKind, ParseError},
     multi::count,
     number::complete::{be_u8, be_u16, be_u32},
 };
@@ -141,7 +142,6 @@ fn parse_resource(packet: Span) -> IResult<Span, Resource> {
         be_u16,
     )
         .parse(packet)?;
-
     let (remaining, rdata) = parse_record_data(remaining, rdlength, r_type)?;
 
     Ok((
@@ -162,21 +162,14 @@ fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
     let mut name_parts = Vec::new();
     let mut remaining = packet;
 
-    // Check if the label name is compressed by looking at the two high bits
-    let mut offset = remaining
-        .first()
-        .copied()
-        .expect("packet should not be empty");
+    // Peek at the next bit to check if this is a compressed name or not before parsing
+    let (_, mut offset) = peek(be_u8).parse(remaining.clone())?;
 
     while (offset & COMPRESSION_MASK) != COMPRESSION_MASK && offset != 0 {
-        println!("in here w offset {offset:?}");
         let (output, label_part) = parse_literal_label(remaining)?;
         remaining = output;
         name_parts.push(label_part);
-        offset = remaining
-            .first()
-            .copied()
-            .expect("packet should not be empty");
+        (_, offset) = peek(be_u8).parse(remaining.clone())?;
     }
 
     if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
@@ -211,38 +204,43 @@ fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
 }
 
 fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult<Span, RecordData> {
-    let (remaining, rdata);
-    let record_data = match r_type {
+    match r_type {
         RecordType::A => {
-            (remaining, rdata) = take(rdlength)(packet)?;
-            let rdata = rdata.fragment().to_vec();
+            // TODO use `context` and `VerboseError`
+            map_res(
+                verify(take(4u8), |_| rdlength == 4),
+                |rdata: Span| -> Result<RecordData, Error<Span>> {
+                    let parsed = rdata.fragment().to_vec().try_into();
 
-            RecordData::AddressData(IPAddress::IPv4(
-                rdata
-                    .as_slice()
-                    .try_into()
-                    .expect("Vec must have exactly 4 elements"), // TODO better
-            ))
+                    match parsed {
+                        Ok(rdata) => Ok(RecordData::AddressData(IPAddress::IPv4(rdata))),
+                        Err(_) => Err(Error::new(rdata, ErrorKind::Verify)),
+                    }
+                },
+            )
+            .parse(packet)
         }
-        RecordType::AAAA => {
-            (remaining, rdata) = take(rdlength)(packet)?;
-            let rdata = rdata.fragment().to_vec();
-            RecordData::AddressData(IPAddress::IPv6(
-                rdata
-                    .as_slice()
-                    .try_into()
-                    .expect("Vec must have exactly 6 elements"), // TODO better
-            ))
-        }
+        RecordType::AAAA => map_res(
+            verify(take(16u8), |_| rdlength == 16),
+            |rdata: Span| -> Result<RecordData, Error<Span>> {
+                let parsed = rdata.fragment().to_vec().try_into();
+
+                match parsed {
+                    Ok(rdata) => Ok(RecordData::AddressData(IPAddress::IPv6(rdata))),
+                    Err(_) => Err(Error::new(rdata, ErrorKind::Verify)),
+                }
+            },
+        )
+        .parse(packet),
         RecordType::NS => {
-            let (output, domain_name) = parse_resource_name(packet)?;
-            remaining = output;
-            RecordData::NameServerData(domain_name)
+            let (remaining, domain_name) = parse_resource_name(packet)?;
+            Ok((remaining, RecordData::NameServerData(domain_name)))
         }
-        RecordType::UNSUPPORTED => todo!(),
-    };
-
-    Ok((remaining, record_data))
+        RecordType::UNSUPPORTED => Err(nom::Err::Failure(ParseError::from_error_kind(
+            packet,
+            ErrorKind::Tag,
+        ))),
+    }
 }
 
 fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
@@ -256,26 +254,28 @@ fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
     let ctx = remaining.extra.borrow_mut();
     let labels = get_label_from_cache(ctx, name_offset);
 
-    Ok((remaining, labels))
+    match labels {
+        Some(labels) => Ok((remaining, labels)),
+        None => Err(nom::Err::Failure(Error::new(remaining, ErrorKind::Verify))),
+    }
 }
 
-fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> DomainName {
-    let (label_offset, label) = ctx
-        .label_cache
-        .range(..=offset)
-        .next_back()
-        .expect("offset should be valid");
+fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<DomainName> {
+    let Some((label_offset, label)) = ctx.label_cache.range(..=offset).next_back() else {
+        // If we don't have a valid offset, return None
+        return None;
+    };
 
     // If we have an exact match in the cache, return it
     if label_offset == &offset {
-        return label.clone(); // TODO clone ok bc Rc
+        return Some(label.clone());
     }
 
     // Otherwise if we don't have key explicitly, it's a sub-part of another label
     let mut amount = offset - label_offset;
 
-    let label = label.as_ref().clone();
-    let mut label_iter = label.into_iter().peekable();
+    let domain_parts = label.as_ref().clone();
+    let mut label_iter = domain_parts.into_iter().peekable();
 
     while let Some(label_part) = label_iter.peek() {
         if amount <= 0 {
@@ -285,12 +285,16 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> DomainNam
         label_iter.next(); // consume this element
     }
 
-    let leftover: Rc<Vec<String>> = label_iter.collect::<Vec<String>>().into();
+    // Collect the label parts after the offset
+    let offset_label: Rc<Vec<String>> = label_iter.collect::<Vec<String>>().into();
+    if offset_label.is_empty() {
+        return None;
+    }
 
     // Add to the cache; it's likely that other parts of the answer might use this
-    ctx.label_cache.insert(offset, leftover.clone());
+    ctx.label_cache.insert(offset, offset_label.clone());
 
-    return leftover;
+    return Some(offset_label);
 }
 
 /// Given a packet where the next byte is the start of a label (label length),
