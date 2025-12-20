@@ -1,6 +1,6 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     rc::Rc,
 };
 
@@ -392,14 +392,38 @@ enum IPAddress {
 
 pub struct PacketBuilder {
     output: Vec<u8>,
+    label_cache: HashMap<Vec<String>, u16>,
 }
 
 impl PacketBuilder {
     pub fn new() -> Self {
-        Self { output: Vec::new() }
+        Self {
+            output: Vec::new(),
+            label_cache: HashMap::new(),
+        }
     }
 
-    pub fn build(&self, packet: Packet) -> Vec<u8> {
+    fn position(&self) -> u16 {
+        self.output.len() as u16
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.output.push(value);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.output.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.output.extend_from_slice(&value.to_be_bytes());
+    }
+
+    fn extend(&mut self, vec: &[u8]) {
+        self.output.extend_from_slice(vec);
+    }
+
+    pub fn build(&mut self, packet: Packet) -> &[u8] {
         // Take apart the packet for consumption
         let Packet {
             header,
@@ -409,99 +433,105 @@ impl PacketBuilder {
             additional_resources,
         } = packet;
 
-        let header = self.build_header(header);
-        let questions = self.build_questions(questions);
-        let answers = self.build_resources(answers);
-        let authorities = self.build_resources(authorities);
-        let additional_resources = self.build_resources(additional_resources);
+        self.build_header(header);
+        self.build_questions(questions);
+        self.build_resources(answers);
+        self.build_resources(authorities);
+        self.build_resources(additional_resources);
 
-        [
-            header,
-            questions,
-            answers,
-            authorities,
-            additional_resources,
-        ]
-        .concat()
+        &self.output
     }
 
-    fn build_header(&self, header: Header) -> Vec<u8> {
-        // TODO nicer?
-        let mut query = Vec::with_capacity(12);
-        query.extend_from_slice(&header.id.to_be_bytes());
-        query.extend_from_slice(&header.flags.to_be_bytes());
-        query.extend_from_slice(&header.q_count.to_be_bytes());
-        query.extend_from_slice(&header.a_count.to_be_bytes());
-        query.extend_from_slice(&header.ns_count.to_be_bytes());
-        query.extend_from_slice(&header.ar_count.to_be_bytes());
-        query
+    fn build_header(&mut self, header: Header) {
+        self.write_u16(header.id);
+        self.write_u16(header.flags);
+        self.write_u16(header.q_count);
+        self.write_u16(header.a_count);
+        self.write_u16(header.ns_count);
+        self.write_u16(header.ar_count);
     }
 
-    fn build_questions(&self, questions: Vec<Question>) -> Vec<u8> {
-        questions
-            .into_iter()
-            .flat_map(|q| self.build_question(q))
-            .collect()
+    fn build_questions(&mut self, questions: Vec<Question>) {
+        for question in questions {
+            self.build_question(question);
+        }
     }
 
-    fn build_question(&self, question: Question) -> Vec<u8> {
-        let mut q_vec: Vec<u8> = Self::build_domain_name(question.labels);
-        q_vec.extend_from_slice(&question.q_type.to_be_bytes());
-        q_vec.extend_from_slice(&question.q_class.to_be_bytes());
-        q_vec
+    fn build_question(&mut self, question: Question) {
+        self.build_domain_name(question.labels);
+        self.write_u16(question.q_type);
+        self.write_u16(question.q_class);
     }
 
-    fn build_resources(&self, resources: Vec<Resource>) -> Vec<u8> {
-        resources
-            .into_iter()
-            .flat_map(|r| self.build_resource(r))
-            .collect()
+    fn build_resources(&mut self, resources: Vec<Resource>) {
+        for resource in resources {
+            self.build_resource(resource);
+        }
     }
 
-    fn build_resource(&self, resource: Resource) -> Vec<u8> {
-        let mut r_vec: Vec<u8> = Self::build_domain_name(resource.name);
-        r_vec.extend_from_slice(&Self::build_record_type(&resource.r_type).to_be_bytes());
-        r_vec.extend_from_slice(&resource.class.to_be_bytes());
-        r_vec.extend_from_slice(&resource.ttl.to_be_bytes());
-        r_vec.extend_from_slice(&resource.rdlength.to_be_bytes());
-        r_vec.extend_from_slice(&Self::build_record_data(&resource.rdata));
-        r_vec
+    fn build_resource(&mut self, resource: Resource) {
+        self.build_domain_name(resource.name);
+        self.build_record_type(&resource.r_type);
+        self.write_u16(resource.class);
+        self.write_u32(resource.ttl);
+        self.write_u16(resource.rdlength);
+        self.build_record_data(&resource.rdata);
     }
 
-    fn build_domain_name(domain_name: DomainName) -> Vec<u8> {
-        let mut name_vec: Vec<u8> = domain_name
-            .iter()
-            .flat_map(|label| {
-                std::iter::once(label.len() as u8)
-                    .chain(label.bytes())
-                    .collect::<Vec<u8>>()
-            })
-            .collect();
+    /// Build up a domain name, using compression
+    fn build_domain_name(&mut self, domain_name: DomainName) {
+        let len = domain_name.len();
+
+        // Loop through the label until we find a suffix in the cache.
+        // Add to the cache if we don't have that suffix present.
+        for i in 0..len {
+            let label = &domain_name[i..len];
+            let existing = self.label_cache.get(&label.to_vec());
+            if let Some(offset) = existing {
+                // Cache hit; write the offset and return early.
+                let value = offset | ((COMPRESSION_MASK as u16) << 8);
+                self.write_u16(value);
+                return;
+            } else {
+                // Add to the label cache and continue.
+                self.label_cache.insert(label.to_vec(), self.position());
+
+                // Add the length and label to the packet.
+                self.write_u8(domain_name[i].len() as u8);
+                for c in domain_name[i].chars() {
+                    self.write_u8(c as u8);
+                }
+            }
+        }
 
         // Terminate label (root, len 0)
-        name_vec.push(0x00);
-
-        name_vec
+        self.write_u8(0x00);
     }
 
-    fn build_record_type(record_type: &RecordType) -> u16 {
-        match record_type {
+    fn build_record_type(&mut self, record_type: &RecordType) {
+        self.write_u16(match record_type {
             RecordType::A => 1,
             RecordType::AAAA => 2,
             RecordType::NS => 28,
             RecordType::UNSUPPORTED(val) => *val,
-        }
+        });
     }
 
-    fn build_record_data(record_data: &RecordData) -> Vec<u8> {
+    fn build_record_data(&mut self, record_data: &RecordData) {
         match record_data {
             RecordData::AddressData(ipaddress) => match ipaddress {
-                IPAddress::IPv4(add) => add.to_vec(),
-                IPAddress::IPv6(add) => add.to_vec(),
+                IPAddress::IPv4(add) => {
+                    self.extend(add);
+                }
+                IPAddress::IPv6(add) => {
+                    self.extend(add);
+                }
             },
-            RecordData::NameServerData(items) => Self::build_domain_name(items.clone()),
-            RecordData::Unsupported(items) => items.to_vec(),
-        }
+            RecordData::NameServerData(items) => self.build_domain_name(items.clone()),
+            RecordData::Unsupported(items) => {
+                self.extend(items);
+            }
+        };
     }
 }
 

@@ -159,3 +159,28 @@ fn can_parse_multiple_questions() {
 
 // TODO once I have better error handling, test more aggressively (e.g. q_count doesn't match the
 // number of questions, check on the _type_ of error message we get)
+//
+
+#[test]
+fn can_build_packet_without_compression() {
+    let file = fs::read("./test_data/dns_query.bin").expect("should be able to read the file");
+    let (_, packet) =
+        parse_packet(Span::new_extra(&file, ParseContext::new())).expect("Packet should parse");
+
+    let mut builder = PacketBuilder::new();
+    let query = builder.build(packet);
+
+    assert_eq!(query, file);
+}
+
+#[test]
+fn can_build_packet_with_compression() {
+    let file = fs::read("./test_data/dns_answer.bin").expect("should be able to read the file");
+    let (_, packet) =
+        parse_packet(Span::new_extra(&file, ParseContext::new())).expect("Packet should parse");
+
+    let mut builder = PacketBuilder::new();
+    let query = builder.build(packet);
+
+    assert_eq!(query, file);
+}
