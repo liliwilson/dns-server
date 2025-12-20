@@ -198,7 +198,7 @@ fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
         1 => RecordType::A,
         2 => RecordType::NS,
         28 => RecordType::AAAA,
-        _ => RecordType::UNSUPPORTED,
+        val => RecordType::UNSUPPORTED(val),
     })
     .parse(packet)
 }
@@ -236,10 +236,13 @@ fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult
             let (remaining, domain_name) = parse_resource_name(packet)?;
             Ok((remaining, RecordData::NameServerData(domain_name)))
         }
-        RecordType::UNSUPPORTED => Err(nom::Err::Failure(ParseError::from_error_kind(
-            packet,
-            ErrorKind::Tag,
-        ))),
+        RecordType::UNSUPPORTED(_) => map_res(
+            take(rdlength),
+            |rdata: Span| -> Result<RecordData, Error<Span>> {
+                Ok(RecordData::Unsupported(rdata.to_vec()))
+            },
+        )
+        .parse(packet),
     }
 }
 
@@ -366,18 +369,19 @@ struct Resource {
     rdata: RecordData,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)] // TODO is clone ok
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum RecordType {
     A,
     AAAA,
     NS,
-    UNSUPPORTED,
+    UNSUPPORTED(u16),
 }
 
 #[derive(Debug, PartialEq)]
 enum RecordData {
     AddressData(IPAddress),
     NameServerData(DomainName),
+    Unsupported(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq)]
