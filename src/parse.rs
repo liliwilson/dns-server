@@ -390,5 +390,120 @@ enum IPAddress {
     IPv6([u8; 16]),
 }
 
+pub struct PacketBuilder {
+    output: Vec<u8>,
+}
+
+impl PacketBuilder {
+    pub fn new() -> Self {
+        Self { output: Vec::new() }
+    }
+
+    pub fn build(&self, packet: Packet) -> Vec<u8> {
+        // Take apart the packet for consumption
+        let Packet {
+            header,
+            questions,
+            answers,
+            authorities,
+            additional_resources,
+        } = packet;
+
+        let header = self.build_header(header);
+        let questions = self.build_questions(questions);
+        let answers = self.build_resources(answers);
+        let authorities = self.build_resources(authorities);
+        let additional_resources = self.build_resources(additional_resources);
+
+        [
+            header,
+            questions,
+            answers,
+            authorities,
+            additional_resources,
+        ]
+        .concat()
+    }
+
+    fn build_header(&self, header: Header) -> Vec<u8> {
+        // TODO nicer?
+        let mut query = Vec::with_capacity(12);
+        query.extend_from_slice(&header.id.to_be_bytes());
+        query.extend_from_slice(&header.flags.to_be_bytes());
+        query.extend_from_slice(&header.q_count.to_be_bytes());
+        query.extend_from_slice(&header.a_count.to_be_bytes());
+        query.extend_from_slice(&header.ns_count.to_be_bytes());
+        query.extend_from_slice(&header.ar_count.to_be_bytes());
+        query
+    }
+
+    fn build_questions(&self, questions: Vec<Question>) -> Vec<u8> {
+        questions
+            .into_iter()
+            .flat_map(|q| self.build_question(q))
+            .collect()
+    }
+
+    fn build_question(&self, question: Question) -> Vec<u8> {
+        let mut q_vec: Vec<u8> = Self::build_domain_name(question.labels);
+        q_vec.extend_from_slice(&question.q_type.to_be_bytes());
+        q_vec.extend_from_slice(&question.q_class.to_be_bytes());
+        q_vec
+    }
+
+    fn build_resources(&self, resources: Vec<Resource>) -> Vec<u8> {
+        resources
+            .into_iter()
+            .flat_map(|r| self.build_resource(r))
+            .collect()
+    }
+
+    fn build_resource(&self, resource: Resource) -> Vec<u8> {
+        let mut r_vec: Vec<u8> = Self::build_domain_name(resource.name);
+        r_vec.extend_from_slice(&Self::build_record_type(&resource.r_type).to_be_bytes());
+        r_vec.extend_from_slice(&resource.class.to_be_bytes());
+        r_vec.extend_from_slice(&resource.ttl.to_be_bytes());
+        r_vec.extend_from_slice(&resource.rdlength.to_be_bytes());
+        r_vec.extend_from_slice(&Self::build_record_data(&resource.rdata));
+        r_vec
+    }
+
+    fn build_domain_name(domain_name: DomainName) -> Vec<u8> {
+        let mut name_vec: Vec<u8> = domain_name
+            .iter()
+            .flat_map(|label| {
+                std::iter::once(label.len() as u8)
+                    .chain(label.bytes())
+                    .collect::<Vec<u8>>()
+            })
+            .collect();
+
+        // Terminate label (root, len 0)
+        name_vec.push(0x00);
+
+        name_vec
+    }
+
+    fn build_record_type(record_type: &RecordType) -> u16 {
+        match record_type {
+            RecordType::A => 1,
+            RecordType::AAAA => 2,
+            RecordType::NS => 28,
+            RecordType::UNSUPPORTED(val) => *val,
+        }
+    }
+
+    fn build_record_data(record_data: &RecordData) -> Vec<u8> {
+        match record_data {
+            RecordData::AddressData(ipaddress) => match ipaddress {
+                IPAddress::IPv4(add) => add.to_vec(),
+                IPAddress::IPv6(add) => add.to_vec(),
+            },
+            RecordData::NameServerData(items) => Self::build_domain_name(items.clone()),
+            RecordData::Unsupported(items) => items.to_vec(),
+        }
+    }
+}
+
 #[path = "parse_tests.rs"]
 mod tests;
