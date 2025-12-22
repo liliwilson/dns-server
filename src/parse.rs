@@ -8,11 +8,15 @@ use nom::{
     IResult, Parser,
     bytes::complete::take,
     combinator::{map, map_res, peek, verify},
-    error::{Error, ErrorKind, ParseError},
+    error::{Error, ErrorKind},
     multi::count,
     number::complete::{be_u8, be_u16, be_u32},
 };
 use nom_locate::LocatedSpan;
+
+use crate::packet::{
+    DomainName, Header, IPAddress, Packet, Question, RecordData, RecordType, Resource,
+};
 
 /// We wrap the packet in `Span` to keep track of offset information to decompress as we parse.
 /// Using Rc + RefCell because nom_locate clones the `extra` every time, but we  don't actually want
@@ -281,10 +285,11 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
     let mut label_iter = domain_parts.into_iter().peekable();
 
     while let Some(label_part) = label_iter.peek() {
-        if amount <= 0 {
+        let label_len = label_part.len() as u16;
+        if amount < label_len {
             break;
         }
-        amount -= label_part.len() as u16 + 1;
+        amount -= label_len + 1;
         label_iter.next(); // consume this element
     }
 
@@ -315,81 +320,6 @@ fn parse_literal_label(packet: Span) -> IResult<Span, String> {
 /// The upper two bits of the first label byte being set indicate that compression is being used
 const COMPRESSION_MASK: u8 = 0b11 << 6;
 
-#[derive(Debug)]
-pub struct Packet {
-    header: Header,
-    questions: Vec<Question>,
-    answers: Vec<Resource>,
-    authorities: Vec<Resource>,
-    additional_resources: Vec<Resource>,
-}
-
-#[derive(Debug, PartialEq)]
-struct Header {
-    /// Unique ID for the query
-    id: u16,
-    /// Flags
-    // 1 bit of query response
-    // 4 bits operation code [we just need this to be 0]
-    // 1 bit of authoritative answer
-    // 1 bit of truncated message
-    // 1 bit of recursion desired
-    // 1 bit of recursion available
-    // 3 bits reserved [used by dnssec]
-    // 4 bits response code
-    flags: u16, // TODO use `bitflags` crate for this?
-    /// Number of questions
-    q_count: u16,
-    /// Number of answers
-    a_count: u16,
-    /// Number of name servers
-    ns_count: u16,
-    /// Number of additional resources
-    ar_count: u16,
-}
-
-// We use an `Rc` here because a label could be shared across multiple questions/answers due to
-// compression
-type DomainName = Rc<Vec<String>>;
-
-#[derive(Debug, PartialEq)]
-struct Question {
-    labels: DomainName,
-    q_type: u16,
-    q_class: u16,
-}
-
-#[derive(Debug, PartialEq)]
-struct Resource {
-    name: DomainName,
-    r_type: RecordType,
-    class: u16,
-    ttl: u32,
-    rdlength: u16,
-    rdata: RecordData,
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum RecordType {
-    A,
-    AAAA,
-    NS,
-    UNSUPPORTED(u16),
-}
-
-#[derive(Debug, PartialEq)]
-enum RecordData {
-    AddressData(IPAddress),
-    NameServerData(DomainName),
-    Unsupported(Vec<u8>),
-}
-
-#[derive(Debug, PartialEq)]
-enum IPAddress {
-    IPv4([u8; 4]),
-    IPv6([u8; 16]),
-}
-
 pub struct PacketBuilder {
     output: Vec<u8>,
     label_cache: HashMap<Vec<String>, u16>,
@@ -401,6 +331,11 @@ impl PacketBuilder {
             output: Vec::new(),
             label_cache: HashMap::new(),
         }
+    }
+
+    pub fn reset(&mut self) {
+        self.output = Vec::new();
+        self.label_cache = HashMap::new();
     }
 
     fn position(&self) -> u16 {
