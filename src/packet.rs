@@ -64,6 +64,7 @@ pub enum RecordType {
     A,
     AAAA,
     NS,
+    OPT,
     UNSUPPORTED(u16),
 }
 
@@ -120,9 +121,14 @@ impl Header {
 }
 
 impl Packet {
-    pub fn new_query(domain_name: String) -> Packet {
+    pub fn new_query(domain_name: String, use_edns: bool) -> Packet {
         let labels: Rc<Vec<String>> =
             Rc::new(domain_name.split('.').map(|s| s.to_string()).collect());
+
+        let mut ars = Vec::new();
+        if use_edns {
+            ars.push(Self::make_edns_record());
+        }
 
         Packet {
             header: Header {
@@ -131,7 +137,7 @@ impl Packet {
                 q_count: 1,
                 a_count: 0,
                 ns_count: 0,
-                ar_count: 0,
+                ar_count: ars.len() as u16,
             },
             questions: vec![Question {
                 labels,
@@ -140,7 +146,18 @@ impl Packet {
             }],
             answers: Vec::new(),
             authorities: Vec::new(),
-            additional_resources: Vec::new(),
+            additional_resources: ars,
+        }
+    }
+
+    fn make_edns_record() -> Resource {
+        Resource {
+            name: Rc::new(vec![]), // TODO default?
+            r_type: RecordType::OPT,
+            class: 4096, // UDP payload size
+            ttl: 0,
+            rdlength: 0,
+            rdata: RecordData::Unsupported(vec![]),
         }
     }
 

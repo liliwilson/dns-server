@@ -189,7 +189,6 @@ fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
     let labels = Rc::new(name_parts);
 
     {
-        println!("inserting {:?} at {:?}", labels, name_offset);
         let mut ctx = remaining.get_context_mut();
         ctx.label_cache.insert(name_offset, labels.clone());
     }
@@ -202,6 +201,7 @@ fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
         1 => RecordType::A,
         2 => RecordType::NS,
         28 => RecordType::AAAA,
+        41 => RecordType::OPT,
         val => RecordType::UNSUPPORTED(val),
     })
     .parse(packet)
@@ -240,7 +240,7 @@ fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult
             let (remaining, domain_name) = parse_resource_name(packet)?;
             Ok((remaining, RecordData::NameServerData(domain_name)))
         }
-        RecordType::UNSUPPORTED(_) => map_res(
+        RecordType::OPT | RecordType::UNSUPPORTED(_) => map_res(
             take(rdlength),
             |rdata: Span| -> Result<RecordData, Error<Span>> {
                 Ok(RecordData::Unsupported(rdata.to_vec()))
@@ -448,6 +448,7 @@ impl PacketBuilder {
             RecordType::A => 1,
             RecordType::AAAA => 2,
             RecordType::NS => 28,
+            RecordType::OPT => 41,
             RecordType::UNSUPPORTED(val) => *val,
         });
     }
