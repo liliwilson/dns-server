@@ -1,6 +1,7 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::{BTreeMap, HashMap},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     rc::Rc,
 };
 
@@ -14,9 +15,7 @@ use nom::{
 };
 use nom_locate::LocatedSpan;
 
-use crate::packet::{
-    DomainName, Header, IPAddress, Packet, Question, RecordData, RecordType, Resource,
-};
+use crate::packet::{DomainName, Header, Packet, Question, RecordData, RecordType, Resource};
 
 /// We wrap the packet in `Span` to keep track of offset information to decompress as we parse.
 /// Using Rc + RefCell because nom_locate clones the `extra` every time, but we  don't actually want
@@ -211,28 +210,22 @@ fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult
     match r_type {
         RecordType::A => {
             // TODO use `context` and `VerboseError`
-            map_res(
-                verify(take(4u8), |_| rdlength == 4),
-                |rdata: Span| -> Result<RecordData, Error<Span>> {
-                    let parsed = rdata.fragment().to_vec().try_into();
-
-                    match parsed {
-                        Ok(rdata) => Ok(RecordData::AddressData(IPAddress::IPv4(rdata))),
-                        Err(_) => Err(Error::new(rdata, ErrorKind::Verify)),
-                    }
-                },
-            )
+            map(verify(be_u32, |_| rdlength == 4), |rdata: u32| {
+                RecordData::AddressData(Ipv4Addr::from(rdata).into())
+            })
             .parse(packet)
         }
         RecordType::AAAA => map_res(
             verify(take(16u8), |_| rdlength == 16),
             |rdata: Span| -> Result<RecordData, Error<Span>> {
-                let parsed = rdata.fragment().to_vec().try_into();
-
-                match parsed {
-                    Ok(rdata) => Ok(RecordData::AddressData(IPAddress::IPv6(rdata))),
-                    Err(_) => Err(Error::new(rdata, ErrorKind::Verify)),
-                }
+                let parsed_addr = u128::from_be_bytes(
+                    rdata
+                        .fragment()
+                        .to_vec()
+                        .try_into()
+                        .expect("Can convert to IPv6 address to u128"),
+                );
+                Ok(RecordData::AddressData(Ipv6Addr::from(parsed_addr).into()))
             },
         )
         .parse(packet),
@@ -451,12 +444,8 @@ impl PacketBuilder {
     fn build_record_data(&mut self, record_data: &RecordData) {
         match record_data {
             RecordData::AddressData(ipaddress) => match ipaddress {
-                IPAddress::IPv4(add) => {
-                    self.extend(add);
-                }
-                IPAddress::IPv6(add) => {
-                    self.extend(add);
-                }
+                IpAddr::V4(ipv4_addr) => self.extend(&ipv4_addr.octets()),
+                IpAddr::V6(ipv6_addr) => self.extend(&ipv6_addr.octets()),
             },
             RecordData::NameServerData(items) => self.build_domain_name(items.clone()),
             RecordData::Unsupported(items) => {

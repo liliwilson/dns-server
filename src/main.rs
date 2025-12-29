@@ -116,7 +116,7 @@ async fn send_query(query_domain: String) -> Result<String, DNSError> {
 
         println!("next ns {:?}", nses);
         for ns in nses {
-            let ns_addr = parsed_packet.get_name_server_address(ns.clone(), true);
+            let ns_addr = parsed_packet.get_name_server_address(ns.clone());
             let new = match ns_addr {
                 Some(addr) => {
                     if ns.to_string() == query_domain {

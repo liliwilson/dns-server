@@ -1,6 +1,6 @@
 use std::{
     fmt::Display,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ops::Deref,
     rc::Rc,
 };
@@ -95,30 +95,9 @@ pub enum RecordType {
 
 #[derive(Debug, PartialEq)]
 pub enum RecordData {
-    AddressData(IPAddress),
+    AddressData(IpAddr),
     NameServerData(DomainName),
     Unsupported(Vec<u8>),
-}
-
-#[derive(Debug, PartialEq)]
-pub enum IPAddress {
-    IPv4([u8; 4]),
-    IPv6([u8; 16]),
-}
-
-impl IPAddress {
-    pub fn to_string(&self) -> String {
-        match self {
-            IPAddress::IPv4(a) => {
-                let addr = Ipv4Addr::from(a.clone());
-                addr.to_string()
-            }
-            IPAddress::IPv6(a) => {
-                let addr = Ipv6Addr::from(a.clone()); // TODO no clone
-                addr.to_string()
-            }
-        }
-    }
 }
 
 impl Header {
@@ -211,12 +190,7 @@ impl Packet {
         name_servers
     }
 
-    pub fn get_name_server_address(
-        &self,
-        domain_name: DomainName,
-        // TODO this is sussss
-        is_ipv4: bool,
-    ) -> Option<&IPAddress> {
+    pub fn get_name_server_address(&self, domain_name: DomainName) -> Option<&IpAddr> {
         // look through additional resources
         self.additional_resources
             .iter()
@@ -225,11 +199,8 @@ impl Packet {
                     return None;
                 }
                 match &r.rdata {
-                    RecordData::AddressData(ipaddress) => match ipaddress {
-                        IPAddress::IPv4(a) => Some(ipaddress),
-                        IPAddress::IPv6(_) => None,
-                    },
-                    _ => None,
+                    RecordData::AddressData(addr) => Some(addr),
+                    RecordData::NameServerData(_) | RecordData::Unsupported(_) => None,
                 }
             })
             .next()
