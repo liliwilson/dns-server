@@ -1,7 +1,11 @@
 use std::{
+    fmt::Display,
     net::{Ipv4Addr, Ipv6Addr},
+    ops::Deref,
     rc::Rc,
 };
+
+use rand::Rng;
 
 #[derive(Debug)]
 pub struct Packet {
@@ -38,7 +42,28 @@ pub struct Header {
 
 // We use an `Rc` here because a label could be shared across multiple questions/answers due to
 // compression
-pub type DomainName = Rc<Vec<String>>;
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DomainName(pub Rc<Vec<String>>);
+
+impl Display for DomainName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.join("."))
+    }
+}
+
+impl Deref for DomainName {
+    type Target = Vec<String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Vec<String>> for DomainName {
+    fn from(value: Vec<String>) -> Self {
+        DomainName(Rc::new(value))
+    }
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Question {
@@ -122,25 +147,26 @@ impl Header {
 
 impl Packet {
     pub fn new_query(domain_name: String, use_edns: bool) -> Packet {
-        let labels: Rc<Vec<String>> =
-            Rc::new(domain_name.split('.').map(|s| s.to_string()).collect());
+        let labels: Vec<String> = domain_name.split('.').map(|s| s.to_string()).collect();
 
         let mut ars = Vec::new();
         if use_edns {
             ars.push(Self::make_edns_record());
         }
 
+        let id: u16 = rand::rng().random();
+
         Packet {
             header: Header {
-                id: 12345, // TODO fix
-                flags: 0,  // TODO fix
+                id,
+                flags: 0, // TODO fix
                 q_count: 1,
                 a_count: 0,
                 ns_count: 0,
                 ar_count: ars.len() as u16,
             },
             questions: vec![Question {
-                labels,
+                labels: labels.into(),
                 q_type: 1,
                 q_class: 1,
             }],
@@ -152,7 +178,7 @@ impl Packet {
 
     fn make_edns_record() -> Resource {
         Resource {
-            name: Rc::new(vec![]), // TODO default?
+            name: DomainName::default(), // default to empty list
             r_type: RecordType::OPT,
             class: 4096, // UDP payload size
             ttl: 0,

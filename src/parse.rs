@@ -179,14 +179,14 @@ fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
     if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
         let (output, extra) = parse_compressed_label(remaining)?;
         remaining = output;
-        name_parts.extend(extra.as_ref().iter().cloned()); // TODO verify
+        name_parts.extend(extra.iter().cloned()); // TODO verify
     } else {
         // consume the null terminator for the literal label
         let (output, _) = be_u8(remaining)?;
         remaining = output;
     }
 
-    let labels = Rc::new(name_parts);
+    let labels: DomainName = name_parts.into();
 
     {
         let mut ctx = remaining.get_context_mut();
@@ -281,7 +281,7 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
     // Otherwise if we don't have key explicitly, it's a sub-part of another label
     let mut amount = offset - label_offset;
 
-    let domain_parts = label.as_ref().clone();
+    let domain_parts = label.to_vec();
     let mut label_iter = domain_parts.into_iter().peekable();
 
     while let Some(label_part) = label_iter.peek() {
@@ -294,7 +294,7 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
     }
 
     // Collect the label parts after the offset
-    let offset_label: Rc<Vec<String>> = label_iter.collect::<Vec<String>>().into();
+    let offset_label: DomainName = label_iter.collect::<Vec<String>>().into();
     if offset_label.is_empty() {
         return None;
     }
@@ -331,11 +331,6 @@ impl PacketBuilder {
             output: Vec::new(),
             label_cache: HashMap::new(),
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.output = Vec::new();
-        self.label_cache = HashMap::new();
     }
 
     fn position(&self) -> u16 {

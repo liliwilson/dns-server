@@ -1,3 +1,9 @@
+use std::fs;
+
+#[cfg(test)]
+use crate::packet::RecordData;
+#[cfg(test)]
+use crate::packet::RecordType;
 #[cfg(test)]
 use crate::parse::*;
 
