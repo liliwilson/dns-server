@@ -1,4 +1,4 @@
-use std::{fmt::Display, net::IpAddr, ops::Deref, rc::Rc};
+use std::{fmt::Display, net::IpAddr, ops::Deref, sync::Arc};
 
 use rand::Rng;
 
@@ -35,10 +35,10 @@ pub struct Header {
     pub ar_count: u16,
 }
 
-// We use an `Rc` here because a label could be shared across multiple questions/answers due to
+// We use an `Arc` here because a label could be shared across multiple questions/answers due to
 // compression
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct DomainName(pub Rc<Vec<String>>);
+pub struct DomainName(pub Arc<Vec<String>>);
 
 impl Display for DomainName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,7 +56,7 @@ impl Deref for DomainName {
 
 impl From<Vec<String>> for DomainName {
     fn from(value: Vec<String>) -> Self {
-        DomainName(Rc::new(value))
+        DomainName(value.into())
     }
 }
 

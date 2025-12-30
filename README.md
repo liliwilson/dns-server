@@ -19,7 +19,6 @@ to benchmark:
 
 ### MAIN NEXT UP
 - tidy what i have
-- add parallel processing
 - add persistence + caching
 - later [ benchmarking w criterion ]
 

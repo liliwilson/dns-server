@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr},
+    sync::Arc,
 };
 
 use tokio::net::UdpSocket;
@@ -17,7 +18,7 @@ const DNS_PORT: u16 = 53;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:8080").await?);
 
     let mut buf = [0; 4096];
     loop {
@@ -30,20 +31,28 @@ async fn main() -> std::io::Result<()> {
         match result {
             Ok((_remaining, parsed)) => match parsed.questions.first() {
                 Some(question) => {
-                    let address = send_query(question.labels.to_string()).await;
-                    println!("\n\n\nAnswer: {address:?}");
+                    // Clone variables so we can move them to the new task
+                    let query_labels = question.labels.clone();
+                    let query_name = question.labels.to_string();
+                    let query_id = parsed.header.id;
+                    let socket_clone = Arc::clone(&socket);
 
-                    let response_packet = match address {
-                        Ok(a) => Packet::new_answer(parsed.header.id, question.labels.clone(), a),
-                        Err(e) => {
-                            println!("DNS lookup error: {e:?}");
-                            Packet::new_not_found(parsed.header.id, question.labels.clone())
-                        }
-                    };
+                    tokio::spawn(async move {
+                        let address = send_query(query_name).await;
+                        println!("\n\n\nAnswer: {address:?}");
 
-                    let mut builder = PacketBuilder::new();
-                    let response = builder.build(response_packet);
-                    socket.send_to(response, src_addr).await?;
+                        let response_packet = match address {
+                            Ok(a) => Packet::new_answer(query_id, query_labels.clone(), a),
+                            Err(e) => {
+                                println!("DNS lookup error: {e:?}");
+                                Packet::new_not_found(query_id, query_labels.clone())
+                            }
+                        };
+
+                        let mut builder = PacketBuilder::new();
+                        let response = builder.build(response_packet);
+                        socket_clone.send_to(response, src_addr).await
+                    });
                 }
                 None => println!("no question supplied, skipping"),
             },
