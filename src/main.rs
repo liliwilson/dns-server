@@ -1,4 +1,7 @@
-use std::collections::HashSet;
+use std::{
+    collections::HashSet,
+    net::{IpAddr, Ipv4Addr},
+};
 
 use tokio::net::UdpSocket;
 
@@ -65,19 +68,20 @@ impl<E: std::fmt::Debug> From<nom::Err<E>> for DNSError {
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 enum NameServer {
-    IPAddress(String),
+    IPAddress(IpAddr),
     DomainName(String),
 }
 
 /// Initialize the list of servers to check with known root servers.
 fn root_servers() -> Vec<NameServer> {
     vec![
-        NameServer::IPAddress("198.41.0.4".to_string()), // a.root-servers.net
+        NameServer::IPAddress(Ipv4Addr::new(198, 41, 0, 4).into()), // a.root-servers.net
     ]
 }
 
-    let out_socket = UdpSocket::bind("0.0.0.0:0").await?;
 async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
+    let out_v4_socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let out_v6_socket = UdpSocket::bind("[::]:0").await?;
 
     let mut name_servers = root_servers();
     let mut seen = HashSet::new();
@@ -98,6 +102,11 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
             NameServer::DomainName(name) => {
                 &Box::pin(send_query(name.clone())).await?
             }
+        };
+
+        let out_socket = match next_name_server {
+            IpAddr::V4(_) => &out_v4_socket,
+            IpAddr::V6(_) => &out_v6_socket,
         };
 
         let mut buf = [0; 4096];
@@ -128,7 +137,7 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
                         return Ok(*addr);
                     }
 
-                    NameServer::IPAddress(addr.to_string())
+                    NameServer::IPAddress(*addr)
                 }
                 None => NameServer::DomainName(ns.to_string()),
             };
