@@ -187,6 +187,26 @@ impl Packet {
             additional_resources: Vec::new(),
         }
     }
+    pub fn new_not_found(id: u16, domain_name: DomainName) -> Packet {
+        Packet {
+            header: Header {
+                id,
+                flags: 0b1000_0000_0000_0011, // TODO fix
+                q_count: 1,
+                a_count: 0,
+                ns_count: 0,
+                ar_count: 0,
+            },
+            questions: vec![Question {
+                labels: domain_name,
+                q_type: 1,
+                q_class: 1,
+            }],
+            answers: vec![],
+            authorities: Vec::new(),
+            additional_resources: Vec::new(),
+        }
+    }
 
     fn make_edns_record() -> Resource {
         Resource {

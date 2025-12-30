@@ -32,13 +32,16 @@ async fn main() -> std::io::Result<()> {
                 Some(question) => {
                     let address = send_query(question.labels.to_string()).await;
                     println!("\n\n\nanswer {address:?}");
-                    if let Ok(a) = address {
-                        let response_packet =
-                            Packet::new_answer(parsed.header.id, question.labels.clone(), a);
-                        let mut builder = PacketBuilder::new();
-                        let response = builder.build(response_packet);
-                        socket.send_to(response, src_addr).await?;
-                    }
+
+                    let response_packet = if let Ok(a) = address {
+                        Packet::new_answer(parsed.header.id, question.labels.clone(), a)
+                    } else {
+                        Packet::new_not_found(parsed.header.id, question.labels.clone())
+                    };
+
+                    let mut builder = PacketBuilder::new();
+                    let response = builder.build(response_packet);
+                    socket.send_to(response, src_addr).await?;
                 }
                 None => println!("no question supplied, skipping"),
             },
