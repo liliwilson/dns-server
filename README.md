@@ -19,14 +19,13 @@ to benchmark:
 
 ### MAIN NEXT UP
 - tidy what i have
-- add cache with TTL
-- persist the cache
+- persist the cache?
 - later [ benchmarking w criterion ]
 
 ### longer term TODO
 - [x] message 8.8.8.8 with a query {decode and re-encode the packet}
 - [x] support messaging 8.8.8.8 with norecurse on
-- [ ] add caching
+- [x] add caching
 - [ ] persist cache
 - [ ] add retry logic / load balance between root servers
 - [ ] move to tcp? 

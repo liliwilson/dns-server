@@ -2,6 +2,7 @@ use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
+    time::{Duration, SystemTime},
 };
 
 use dashmap::DashMap;
@@ -16,7 +17,12 @@ use crate::{
 };
 
 const DNS_PORT: u16 = 53;
-type DNSCache = Arc<DashMap<String, IpAddr>>;
+type DNSCache = Arc<DashMap<String, CachedAddr>>;
+#[derive(Debug)]
+struct CachedAddr {
+    addr: IpAddr,
+    expiration_time: SystemTime,
+}
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -109,9 +115,14 @@ fn root_servers() -> Vec<NameServer> {
 }
 
 async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr, DNSError> {
-    if let Some(addr) = dns_cache.get(&query_domain) {
-        println!("reading value for {query_domain:?} from cache: {addr:?}");
-        return Ok(*addr);
+    if let Some(cached_addr) = dns_cache.get(&query_domain) {
+        if SystemTime::now() < cached_addr.expiration_time {
+            println!(
+                "reading value for {query_domain:?} from cache: {:?} until {:?}",
+                cached_addr.addr, cached_addr.expiration_time
+            );
+            return Ok(cached_addr.addr);
+        }
     }
 
     let out_v4_socket = UdpSocket::bind("0.0.0.0:0").await?;
@@ -152,9 +163,18 @@ async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr,
 
         // If we have an answer and can get an IP address from it, return it
         if parsed_packet.has_answer()
-            && let RecordData::Address(addr) = &parsed_packet.answers[0].rdata
+            && let (RecordData::Address(addr), ttl) = (
+                &parsed_packet.answers[0].rdata,
+                parsed_packet.answers[0].ttl,
+            )
         {
-            dns_cache.insert(query_domain, *addr);
+            dns_cache.insert(
+                query_domain,
+                CachedAddr {
+                    addr: *addr,
+                    expiration_time: SystemTime::now() + Duration::from_secs(ttl as u64),
+                },
+            );
             return Ok(*addr);
         }
 
@@ -165,11 +185,18 @@ async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr,
 
         println!("next ns {:?}", nses);
         for ns in nses {
-            let ns_addr = parsed_packet.get_name_server_address(ns.clone());
-            let new = match ns_addr {
-                Some(addr) => {
+            let ns_data = parsed_packet.get_name_server_address(ns.clone());
+            let new = match ns_data {
+                Some((addr, ttl)) => {
                     if ns.to_string() == query_domain {
-                        dns_cache.insert(query_domain, *addr);
+                        dns_cache.insert(
+                            query_domain,
+                            CachedAddr {
+                                addr: *addr,
+                                expiration_time: SystemTime::now()
+                                    + Duration::from_secs(ttl as u64),
+                            },
+                        );
                         return Ok(*addr);
                     }
 

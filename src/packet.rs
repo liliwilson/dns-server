@@ -242,7 +242,8 @@ impl Packet {
             .collect()
     }
 
-    pub fn get_name_server_address(&self, domain_name: DomainName) -> Option<&IpAddr> {
+    /// Returns an IP address for the domain name and a TTL in seconds.
+    pub fn get_name_server_address(&self, domain_name: DomainName) -> Option<(&IpAddr, u32)> {
         // look through additional resources
         self.additional_resources
             .iter()
@@ -251,7 +252,7 @@ impl Packet {
                     return None;
                 }
                 match &r.rdata {
-                    RecordData::Address(addr) => Some(addr),
+                    RecordData::Address(addr) => Some((addr, r.ttl)),
                     RecordData::NameServer(_)
                     | RecordData::Opt
                     | RecordData::Unsupported {
