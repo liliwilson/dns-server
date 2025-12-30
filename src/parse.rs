@@ -76,7 +76,7 @@ pub enum DnsParseError<I> {
     InvalidRdlength {
         expected: u16,
         actual: u16,
-        record_type: RecordType,
+        record_type: u16,
         input: I,
     },
     /// Domain label contains invalid UTF-8
@@ -202,21 +202,14 @@ fn parse_additional_resources(packet: Span) -> ParseResult<Vec<Resource>> {
 }
 
 fn parse_resource(packet: Span) -> ParseResult<Resource> {
-    let (remaining, (name, r_type, class, ttl, rdlength)) = (
-        parse_resource_name,
-        parse_record_type,
-        be_u16,
-        be_u32,
-        be_u16,
-    )
-        .parse(packet)?;
+    let (remaining, (name, r_type, class, ttl, rdlength)) =
+        (parse_resource_name, be_u16, be_u16, be_u32, be_u16).parse(packet)?;
     let (remaining, rdata) = parse_record_data(remaining, rdlength, r_type)?;
 
     Ok((
         remaining,
         Resource {
             name,
-            r_type,
             class,
             ttl,
             rdata,
@@ -259,19 +252,8 @@ fn parse_resource_name(packet: Span) -> ParseResult<DomainName> {
     Ok((remaining, labels))
 }
 
-fn parse_record_type(packet: Span) -> ParseResult<RecordType> {
-    map(be_u16, |rtype| match rtype {
-        1 => RecordType::A,
-        2 => RecordType::NS,
-        28 => RecordType::AAAA,
-        41 => RecordType::OPT,
-        val => RecordType::UNSUPPORTED(val),
-    })
-    .parse(packet)
-}
-
-fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> ParseResult<RecordData> {
-    match r_type {
+fn parse_record_data(packet: Span, rdlength: u16, r_type: u16) -> ParseResult<RecordData> {
+    match RecordType(r_type) {
         RecordType::A => {
             if rdlength != 4 {
                 return Err(nom::Err::Failure(DnsParseError::InvalidRdlength {
@@ -282,7 +264,7 @@ fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> ParseRe
                 }));
             }
             map(be_u32, |rdata: u32| {
-                RecordData::AddressData(Ipv4Addr::from(rdata).into())
+                RecordData::Address(Ipv4Addr::from(rdata).into())
             })
             .parse(packet)
         }
@@ -297,16 +279,18 @@ fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> ParseRe
             }
 
             map(be_u128, |rdata: u128| {
-                RecordData::AddressData(Ipv6Addr::from(rdata).into())
+                RecordData::Address(Ipv6Addr::from(rdata).into())
             })
             .parse(packet)
         }
         RecordType::NS => {
             let (remaining, domain_name) = parse_resource_name(packet)?;
-            Ok((remaining, RecordData::NameServerData(domain_name)))
+            Ok((remaining, RecordData::NameServer(domain_name)))
         }
-        RecordType::OPT | RecordType::UNSUPPORTED(_) => map(take(rdlength), |rdata: Span| {
-            RecordData::Unsupported(rdata.to_vec())
+        RecordType::OPT => Ok((packet, RecordData::Opt)),
+        RecordType(r_type) => map(take(rdlength), |rdata: Span| RecordData::Unsupported {
+            rdata: rdata.to_vec(),
+            r_type,
         })
         .parse(packet),
     }
@@ -467,17 +451,18 @@ impl PacketBuilder {
 
     fn build_resource(&mut self, resource: Resource) {
         self.build_domain_name(resource.name);
-        self.build_record_type(&resource.r_type);
+        self.build_record_type(&resource.rdata);
         self.write_u16(resource.class);
         self.write_u32(resource.ttl);
 
         let rdlength = match &resource.rdata {
-            RecordData::AddressData(ip_addr) => match ip_addr {
+            RecordData::Address(ip_addr) => match ip_addr {
                 IpAddr::V4(_) => 4,
                 IpAddr::V6(_) => 16,
             },
-            RecordData::NameServerData(domain_name) => domain_name.serialized_len(),
-            RecordData::Unsupported(items) => items.len() as u16,
+            RecordData::NameServer(domain_name) => domain_name.serialized_len(),
+            RecordData::Opt => 0,
+            RecordData::Unsupported { rdata, r_type: _ } => rdata.len() as u16,
         };
         self.write_u16(rdlength);
 
@@ -514,25 +499,29 @@ impl PacketBuilder {
         self.write_u8(0x00);
     }
 
-    fn build_record_type(&mut self, record_type: &RecordType) {
-        self.write_u16(match record_type {
-            RecordType::A => 1,
-            RecordType::AAAA => 2,
-            RecordType::NS => 28,
-            RecordType::OPT => 41,
-            RecordType::UNSUPPORTED(val) => *val,
-        });
+    fn build_record_type(&mut self, rdata: &RecordData) {
+        let r_type = match rdata {
+            RecordData::Address(ip_addr) => match ip_addr {
+                IpAddr::V4(_) => RecordType::A,
+                IpAddr::V6(_) => RecordType::AAAA,
+            },
+            RecordData::NameServer(_) => RecordType::NS,
+            RecordData::Opt => RecordType::OPT,
+            RecordData::Unsupported { rdata: _, r_type } => RecordType(*r_type),
+        };
+        self.write_u16(r_type.0);
     }
 
     fn build_record_data(&mut self, record_data: &RecordData) {
         match record_data {
-            RecordData::AddressData(ipaddress) => match ipaddress {
+            RecordData::Address(ipaddress) => match ipaddress {
                 IpAddr::V4(ipv4_addr) => self.extend(&ipv4_addr.octets()),
                 IpAddr::V6(ipv6_addr) => self.extend(&ipv6_addr.octets()),
             },
-            RecordData::NameServerData(items) => self.build_domain_name(items.clone()),
-            RecordData::Unsupported(items) => {
-                self.extend(items);
+            RecordData::NameServer(items) => self.build_domain_name(items.clone()),
+            RecordData::Opt => {} // Don't add anything here for opts
+            RecordData::Unsupported { rdata, r_type: _ } => {
+                self.extend(rdata);
             }
         };
     }

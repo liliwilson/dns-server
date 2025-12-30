@@ -365,10 +365,9 @@ fn can_parse_a_record_data() {
         parse_packet(Span::new_extra(&packet, ParseContext::new())).expect("Packet should parse");
 
     assert_eq!(result.answers.len(), 1);
-    assert_eq!(result.answers[0].r_type, RecordType::A);
     assert_eq!(
         result.answers[0].rdata,
-        RecordData::AddressData(Ipv4Addr::from(ipv4_addr).into())
+        RecordData::Address(Ipv4Addr::from(ipv4_addr).into())
     );
 }
 
@@ -384,10 +383,9 @@ fn can_parse_ns_record_data() {
         parse_packet(Span::new_extra(&packet, ParseContext::new())).expect("Packet should parse");
 
     assert_eq!(result.answers.len(), 1);
-    assert_eq!(result.answers[0].r_type, RecordType::NS);
     assert_eq!(
         result.answers[0].rdata,
-        RecordData::NameServerData(ns_domain.into())
+        RecordData::NameServer(ns_domain.into())
     );
 }
 
@@ -437,18 +435,14 @@ fn fail_parse_record_data_with_wrong_rdlength() {
 
     let err = result.unwrap_err();
     match err {
-        nom::Err::Error(DnsParseError::InvalidRdlength {
+        nom::Err::Failure(DnsParseError::InvalidRdlength {
             expected: 4,
             actual: 3,
-            record_type: RecordType::A,
+            record_type,
             ..
-        })
-        | nom::Err::Failure(DnsParseError::InvalidRdlength {
-            expected: 4,
-            actual: 3,
-            record_type: RecordType::A,
-            ..
-        }) => {}
+        }) => {
+            assert_eq!(RecordType(record_type), RecordType::A)
+        }
         other => panic!("Expected InvalidRdlength, got {:?}", other),
     }
 }

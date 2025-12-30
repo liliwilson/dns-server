@@ -79,28 +79,27 @@ pub struct Question {
 #[derive(Debug, PartialEq)]
 pub struct Resource {
     pub name: DomainName,
-    // TODO refactor so that we don't store r_type and rdlength -- just use rdata as canonical
-    // source
-    pub r_type: RecordType,
     pub class: u16,
     pub ttl: u32,
     pub rdata: RecordData,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum RecordType {
-    A,
-    AAAA,
-    NS,
-    OPT,
-    UNSUPPORTED(u16),
+#[derive(Debug, PartialEq)]
+pub struct RecordType(pub u16);
+
+impl RecordType {
+    pub const A: RecordType = RecordType(1);
+    pub const NS: RecordType = RecordType(2);
+    pub const AAAA: RecordType = RecordType(28);
+    pub const OPT: RecordType = RecordType(41);
 }
 
 #[derive(Debug, PartialEq)]
 pub enum RecordData {
-    AddressData(IpAddr),
-    NameServerData(DomainName),
-    Unsupported(Vec<u8>),
+    Address(IpAddr),
+    NameServer(DomainName),
+    Opt,
+    Unsupported { rdata: Vec<u8>, r_type: u16 },
 }
 
 impl Header {
@@ -159,9 +158,9 @@ impl Packet {
     }
 
     pub fn new_answer(id: u16, domain_name: DomainName, answer_ip: IpAddr) -> Packet {
-        let (r_type, rdata) = match answer_ip {
-            IpAddr::V4(_) => (RecordType::A, RecordData::AddressData(answer_ip)),
-            IpAddr::V6(_) => (RecordType::AAAA, RecordData::AddressData(answer_ip)),
+        let rdata = match answer_ip {
+            IpAddr::V4(_) => RecordData::Address(answer_ip),
+            IpAddr::V6(_) => RecordData::Address(answer_ip),
         };
 
         Packet {
@@ -180,7 +179,6 @@ impl Packet {
             }],
             answers: vec![Resource {
                 name: domain_name,
-                r_type,
                 class: 1, // Hardcoded IN class
                 ttl: 300, //TODO hardocded
                 rdata,
@@ -213,10 +211,9 @@ impl Packet {
     fn make_edns_record() -> Resource {
         Resource {
             name: DomainName::default(), // default to empty list
-            r_type: RecordType::OPT,
-            class: 4096, // UDP payload size
+            class: 4096,                 // UDP payload size
             ttl: 0,
-            rdata: RecordData::Unsupported(vec![]),
+            rdata: RecordData::Opt,
         }
     }
 
@@ -234,9 +231,13 @@ impl Packet {
         self.authorities
             .iter()
             .filter_map(|ns| match &ns.rdata {
-                RecordData::AddressData(_) => None,
-                RecordData::NameServerData(items) => Some(items.clone()), // TODO yuck
-                RecordData::Unsupported(_) => None,
+                RecordData::Address(_) => None,
+                RecordData::NameServer(items) => Some(items.clone()), // TODO yuck
+                RecordData::Opt
+                | RecordData::Unsupported {
+                    rdata: _,
+                    r_type: _,
+                } => None,
             })
             .collect()
     }
@@ -250,8 +251,13 @@ impl Packet {
                     return None;
                 }
                 match &r.rdata {
-                    RecordData::AddressData(addr) => Some(addr),
-                    RecordData::NameServerData(_) | RecordData::Unsupported(_) => None,
+                    RecordData::Address(addr) => Some(addr),
+                    RecordData::NameServer(_)
+                    | RecordData::Opt
+                    | RecordData::Unsupported {
+                        rdata: _,
+                        r_type: _,
+                    } => None,
                 }
             })
             .next()

@@ -133,7 +133,7 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
 
         // If we have an answer and can get an IP address from it, return it
         if parsed_packet.has_answer()
-            && let RecordData::AddressData(ipaddr) = &parsed_packet.answers[0].rdata
+            && let RecordData::Address(ipaddr) = &parsed_packet.answers[0].rdata
         {
             return Ok(*ipaddr);
         }
