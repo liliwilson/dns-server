@@ -366,7 +366,6 @@ fn can_parse_a_record_data() {
 
     assert_eq!(result.answers.len(), 1);
     assert_eq!(result.answers[0].r_type, RecordType::A);
-    assert_eq!(result.answers[0].rdlength, 4);
     assert_eq!(
         result.answers[0].rdata,
         RecordData::AddressData(Ipv4Addr::from(ipv4_addr).into())

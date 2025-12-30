@@ -219,7 +219,6 @@ fn parse_resource(packet: Span) -> ParseResult<Resource> {
             r_type,
             class,
             ttl,
-            rdlength,
             rdata,
         },
     ))
@@ -471,7 +470,17 @@ impl PacketBuilder {
         self.build_record_type(&resource.r_type);
         self.write_u16(resource.class);
         self.write_u32(resource.ttl);
-        self.write_u16(resource.rdlength);
+
+        let rdlength = match &resource.rdata {
+            RecordData::AddressData(ip_addr) => match ip_addr {
+                IpAddr::V4(_) => 4,
+                IpAddr::V6(_) => 16,
+            },
+            RecordData::NameServerData(domain_name) => domain_name.serialized_len(),
+            RecordData::Unsupported(items) => items.len() as u16,
+        };
+        self.write_u16(rdlength);
+
         self.build_record_data(&resource.rdata);
     }
 

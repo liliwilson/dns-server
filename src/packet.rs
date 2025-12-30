@@ -60,6 +60,15 @@ impl From<Vec<String>> for DomainName {
     }
 }
 
+impl DomainName {
+    /// Returns the name of the entire domain name, including space for separators
+    pub fn serialized_len(&self) -> u16 {
+        // Add 1 to the length of each label for the length separator, then add one to the end for
+        // the root terminator
+        self.iter().map(|label| label.len() as u16 + 1).sum::<u16>() + 1
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Question {
     pub labels: DomainName,
@@ -75,7 +84,6 @@ pub struct Resource {
     pub r_type: RecordType,
     pub class: u16,
     pub ttl: u32,
-    pub rdlength: u16,
     pub rdata: RecordData,
 }
 
@@ -151,9 +159,9 @@ impl Packet {
     }
 
     pub fn new_answer(id: u16, domain_name: DomainName, answer_ip: IpAddr) -> Packet {
-        let (r_type, rdata, rdlength) = match answer_ip {
-            IpAddr::V4(_) => (RecordType::A, RecordData::AddressData(answer_ip), 4),
-            IpAddr::V6(_) => (RecordType::AAAA, RecordData::AddressData(answer_ip), 16),
+        let (r_type, rdata) = match answer_ip {
+            IpAddr::V4(_) => (RecordType::A, RecordData::AddressData(answer_ip)),
+            IpAddr::V6(_) => (RecordType::AAAA, RecordData::AddressData(answer_ip)),
         };
 
         Packet {
@@ -175,7 +183,6 @@ impl Packet {
                 r_type,
                 class: 1, // Hardcoded IN class
                 ttl: 300, //TODO hardocded
-                rdlength,
                 rdata,
             }],
             authorities: Vec::new(),
@@ -209,7 +216,6 @@ impl Packet {
             r_type: RecordType::OPT,
             class: 4096, // UDP payload size
             ttl: 0,
-            rdlength: 0,
             rdata: RecordData::Unsupported(vec![]),
         }
     }
