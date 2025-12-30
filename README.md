@@ -13,13 +13,18 @@ to test:
 
 ## todo list
 
-- [ ] message 8.8.8.8 with a query {decode and re-encode the packet}
-- [ ] support messaging 8.8.8.8 with norecurse on
+### MAIN NEXT UP
+- tidy what i have
+- add parallel processing
+- add persistence + caching
+
+### longer term TODO
+- [x] message 8.8.8.8 with a query {decode and re-encode the packet}
+- [x] support messaging 8.8.8.8 with norecurse on
 - [ ] add caching
 - [ ] persist cache
-- [ ] add retry logic (what if 8.8.8.8 doesn't know?)
+- [ ] add retry logic
 - [ ] move to tcp? 
-- [ ] add compression
 - [ ] edns
 - [ ] dnssec? 
 - [ ] cname?

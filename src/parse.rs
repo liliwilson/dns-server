@@ -318,7 +318,7 @@ fn parse_compressed_label(packet: Span) -> ParseResult<DomainName> {
     let (remaining, mut name_offset) = be_u16(packet.clone())?;
 
     // Remove the two high bits to get the actual offset
-    name_offset = name_offset & !((COMPRESSION_MASK as u16) << 8);
+    name_offset &= !((COMPRESSION_MASK as u16) << 8);
 
     // Read the value at `name_offset` from the label cache
     let ctx = remaining.extra.borrow_mut();
@@ -483,7 +483,7 @@ impl PacketBuilder {
         // Add to the cache if we don't have that suffix present.
         for i in 0..len {
             let label = &domain_name[i..len];
-            let existing = self.label_cache.get(&label.to_vec());
+            let existing = self.label_cache.get(label);
             if let Some(offset) = existing {
                 // Cache hit; write the offset and return early.
                 let value = offset | ((COMPRESSION_MASK as u16) << 8);

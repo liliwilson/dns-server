@@ -1,7 +1,3 @@
-use std::fs;
-
-use std::net::Ipv4Addr;
-
 #[cfg(test)]
 use crate::packet::RecordData;
 #[cfg(test)]
@@ -10,6 +6,8 @@ use crate::packet::RecordType;
 use crate::parse::*;
 #[cfg(test)]
 use nom::error::ErrorKind;
+#[cfg(test)]
+use std::fs;
 
 #[cfg(test)]
 fn build_literal_resource_name(target_domain: &Vec<String>, include_terminator: bool) -> Vec<u8> {

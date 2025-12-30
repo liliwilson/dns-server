@@ -132,10 +132,10 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
         let (_, parsed_packet) = parse_packet(Span::new_extra(&buf[..bytes], ParseContext::new()))?;
 
         // If we have an answer and can get an IP address from it, return it
-        if parsed_packet.has_answer() {
-            if let RecordData::AddressData(ipaddr) = &parsed_packet.answers[0].rdata {
-                return Ok(*ipaddr);
-            }
+        if parsed_packet.has_answer()
+            && let RecordData::AddressData(ipaddr) = &parsed_packet.answers[0].rdata
+        {
+            return Ok(*ipaddr);
         }
 
         let nses = parsed_packet.get_next_name_servers();

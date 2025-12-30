@@ -1,9 +1,4 @@
-use std::{
-    fmt::Display,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    ops::Deref,
-    rc::Rc,
-};
+use std::{fmt::Display, net::IpAddr, ops::Deref, rc::Rc};
 
 use rand::Rng;
 
@@ -230,17 +225,14 @@ impl Packet {
 
         // get all NS domains
         // TODO handle authorities that aren't NS records
-        let name_servers = self
-            .authorities
+        self.authorities
             .iter()
             .filter_map(|ns| match &ns.rdata {
                 RecordData::AddressData(_) => None,
                 RecordData::NameServerData(items) => Some(items.clone()), // TODO yuck
                 RecordData::Unsupported(_) => None,
             })
-            .collect();
-
-        name_servers
+            .collect()
     }
 
     pub fn get_name_server_address(&self, domain_name: DomainName) -> Option<&IpAddr> {
