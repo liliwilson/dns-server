@@ -17,10 +17,8 @@ async fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind("127.0.0.1:8080").await?;
 
     let mut buf = [0; 4096];
-
     loop {
         let (bytes, src_addr) = socket.recv_from(&mut buf).await?;
-
         let packet = &buf[..bytes];
 
         println!("Got {} bytes from {}", bytes, src_addr);
@@ -30,7 +28,14 @@ async fn main() -> std::io::Result<()> {
             Ok((_remaining, parsed)) => match parsed.questions.first() {
                 Some(question) => {
                     let address = send_query(question.labels.to_string()).await;
-                    println!("answer {address:?}");
+                    println!("\n\n\nanswer {address:?}");
+                    if let Ok(a) = address {
+                        let response_packet =
+                            Packet::new_answer(parsed.header.id, question.labels.clone(), a);
+                        let mut builder = PacketBuilder::new();
+                        let response = builder.build(response_packet);
+                        socket.send_to(response, src_addr).await?;
+                    }
                 }
                 None => println!("no question supplied, skipping"),
             },
@@ -71,8 +76,8 @@ fn root_servers() -> Vec<NameServer> {
     ]
 }
 
-async fn send_query(query_domain: String) -> Result<String, DNSError> {
     let out_socket = UdpSocket::bind("0.0.0.0:0").await?;
+async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
 
     let mut name_servers = root_servers();
     let mut seen = HashSet::new();
@@ -105,7 +110,7 @@ async fn send_query(query_domain: String) -> Result<String, DNSError> {
         // If we have an answer and can get an IP address from it, return it
         if parsed_packet.has_answer() {
             if let RecordData::AddressData(ipaddr) = &parsed_packet.answers[0].rdata {
-                return Ok(ipaddr.to_string());
+                return Ok(*ipaddr);
             }
         }
 
@@ -120,7 +125,7 @@ async fn send_query(query_domain: String) -> Result<String, DNSError> {
             let new = match ns_addr {
                 Some(addr) => {
                     if ns.to_string() == query_domain {
-                        return Ok(addr.to_string());
+                        return Ok(*addr);
                     }
 
                     NameServer::IPAddress(addr.to_string())

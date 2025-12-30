@@ -155,6 +155,39 @@ impl Packet {
         }
     }
 
+    pub fn new_answer(id: u16, domain_name: DomainName, answer_ip: IpAddr) -> Packet {
+        let (r_type, rdata, rdlength) = match answer_ip {
+            IpAddr::V4(_) => (RecordType::A, RecordData::AddressData(answer_ip), 4),
+            IpAddr::V6(_) => (RecordType::AAAA, RecordData::AddressData(answer_ip), 16),
+        };
+
+        Packet {
+            header: Header {
+                id,
+                flags: 0b1000_0100_0000_0000, // TODO fix
+                q_count: 1,
+                a_count: 1, // TODO don't hardcode
+                ns_count: 0,
+                ar_count: 0,
+            },
+            questions: vec![Question {
+                labels: domain_name.clone(),
+                q_type: 1,
+                q_class: 1,
+            }],
+            answers: vec![Resource {
+                name: domain_name,
+                r_type,
+                class: 1, // Hardcoded IN class
+                ttl: 300, //TODO hardocded
+                rdlength,
+                rdata,
+            }],
+            authorities: Vec::new(),
+            additional_resources: Vec::new(),
+        }
+    }
+
     fn make_edns_record() -> Resource {
         Resource {
             name: DomainName::default(), // default to empty list
