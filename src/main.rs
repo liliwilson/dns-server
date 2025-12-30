@@ -31,12 +31,14 @@ async fn main() -> std::io::Result<()> {
             Ok((_remaining, parsed)) => match parsed.questions.first() {
                 Some(question) => {
                     let address = send_query(question.labels.to_string()).await;
-                    println!("\n\n\nanswer {address:?}");
+                    println!("\n\n\nAnswer: {address:?}");
 
-                    let response_packet = if let Ok(a) = address {
-                        Packet::new_answer(parsed.header.id, question.labels.clone(), a)
-                    } else {
-                        Packet::new_not_found(parsed.header.id, question.labels.clone())
+                    let response_packet = match address {
+                        Ok(a) => Packet::new_answer(parsed.header.id, question.labels.clone(), a),
+                        Err(e) => {
+                            println!("DNS lookup error: {e:?}");
+                            Packet::new_not_found(parsed.header.id, question.labels.clone())
+                        }
                     };
 
                     let mut builder = PacketBuilder::new();
@@ -55,6 +57,16 @@ enum DNSError {
     NotFound,
     Io(std::io::Error),
     Parse(String),
+}
+
+impl std::fmt::Display for DNSError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DNSError::NotFound => write!(f, "DNS record not found"),
+            DNSError::Io(e) => write!(f, "IO error: {}", e),
+            DNSError::Parse(s) => write!(f, "parse error: {}", s),
+        }
+    }
 }
 
 impl From<std::io::Error> for DNSError {
@@ -149,5 +161,5 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
         }
     }
 
-    return Err(DNSError::NotFound);
+    Err(DNSError::NotFound)
 }

@@ -1,17 +1,19 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::{BTreeMap, HashMap},
+    fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     rc::Rc,
+    string::FromUtf8Error,
 };
 
 use nom::{
     IResult, Parser,
     bytes::complete::take,
-    combinator::{map, map_res, peek, verify},
-    error::{Error, ErrorKind},
+    combinator::{map, map_res, peek},
+    error::{ErrorKind, FromExternalError, ParseError},
     multi::count,
-    number::complete::{be_u8, be_u16, be_u32},
+    number::complete::{be_u8, be_u16, be_u32, be_u128},
 };
 use nom_locate::LocatedSpan;
 
@@ -64,7 +66,70 @@ impl ParseContext {
     }
 }
 
-pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
+#[derive(Debug)]
+pub enum DnsParseError<I> {
+    /// Generic nom parse error
+    Nom(I, ErrorKind),
+    /// Compression pointer references invalid/unknown offset
+    InvalidCompressionOffset { offset: u16, input: I },
+    /// Record data length doesn't match expected for record type
+    InvalidRdlength {
+        expected: u16,
+        actual: u16,
+        record_type: RecordType,
+        input: I,
+    },
+    /// Domain label contains invalid UTF-8
+    InvalidUtf8Label { input: I },
+}
+
+impl<I> ParseError<I> for DnsParseError<I> {
+    fn from_error_kind(input: I, kind: ErrorKind) -> Self {
+        DnsParseError::Nom(input, kind)
+    }
+
+    // For now, not implementing any sort of error tracing
+    fn append(_input: I, _kind: ErrorKind, other: Self) -> Self {
+        other
+    }
+}
+
+impl<I> FromExternalError<I, FromUtf8Error> for DnsParseError<I> {
+    fn from_external_error(input: I, _kind: ErrorKind, _e: FromUtf8Error) -> Self {
+        DnsParseError::InvalidUtf8Label { input }
+    }
+}
+
+impl<I: fmt::Debug> fmt::Display for DnsParseError<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DnsParseError::Nom(input, kind) => write!(f, "parse error {:?} at {:?}", kind, input),
+            DnsParseError::InvalidCompressionOffset { offset, input } => {
+                write!(f, "invalid compression offset {} at {:?}", offset, input)
+            }
+            DnsParseError::InvalidRdlength {
+                expected,
+                actual,
+                record_type,
+                input,
+            } => {
+                write!(
+                    f,
+                    "invalid rdlength for {:?}: expected {}, got {} at {:?}",
+                    record_type, expected, actual, input
+                )
+            }
+            DnsParseError::InvalidUtf8Label { input } => {
+                write!(f, "invalid UTF-8 in label at {:?}", input)
+            }
+        }
+    }
+}
+
+// Define type for parse results that return our custom DNS error type
+type ParseResult<'a, O> = IResult<Span<'a>, O, DnsParseError<Span<'a>>>;
+
+pub fn parse_packet(packet: Span) -> ParseResult<Packet> {
     map(
         (
             parse_header,
@@ -84,7 +149,7 @@ pub fn parse_packet(packet: Span) -> IResult<Span, Packet> {
     .parse(packet)
 }
 
-fn parse_header(packet: Span) -> IResult<Span, Header> {
+fn parse_header(packet: Span) -> ParseResult<Header> {
     let (res, header) = map(
         (be_u16, be_u16, be_u16, be_u16, be_u16, be_u16),
         |(id, flags, q_count, a_count, ns_count, ar_count)| Header {
@@ -104,12 +169,12 @@ fn parse_header(packet: Span) -> IResult<Span, Header> {
     Ok((res, header))
 }
 
-fn parse_questions(packet: Span) -> IResult<Span, Vec<Question>> {
+fn parse_questions(packet: Span) -> ParseResult<Vec<Question>> {
     let q_count = packet.get_context().q_count as usize;
     count(parse_question, q_count).parse(packet)
 }
 
-fn parse_question(packet: Span) -> IResult<Span, Question> {
+fn parse_question(packet: Span) -> ParseResult<Question> {
     map(
         (parse_resource_name, be_u16, be_u16),
         |(labels, q_type, q_class)| Question {
@@ -121,22 +186,22 @@ fn parse_question(packet: Span) -> IResult<Span, Question> {
     .parse(packet)
 }
 
-fn parse_answers(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_answers(packet: Span) -> ParseResult<Vec<Resource>> {
     let a_count = packet.get_context().a_count as usize;
     count(parse_resource, a_count).parse(packet)
 }
 
-fn parse_authorities(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_authorities(packet: Span) -> ParseResult<Vec<Resource>> {
     let ns_count = packet.get_context().ns_count as usize;
     count(parse_resource, ns_count).parse(packet)
 }
 
-fn parse_additional_resources(packet: Span) -> IResult<Span, Vec<Resource>> {
+fn parse_additional_resources(packet: Span) -> ParseResult<Vec<Resource>> {
     let ar_count = packet.get_context().ar_count as usize;
     count(parse_resource, ar_count).parse(packet)
 }
 
-fn parse_resource(packet: Span) -> IResult<Span, Resource> {
+fn parse_resource(packet: Span) -> ParseResult<Resource> {
     let (remaining, (name, r_type, class, ttl, rdlength)) = (
         parse_resource_name,
         parse_record_type,
@@ -160,7 +225,7 @@ fn parse_resource(packet: Span) -> IResult<Span, Resource> {
     ))
 }
 
-fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
+fn parse_resource_name(packet: Span) -> ParseResult<DomainName> {
     let name_offset = packet.location_offset() as u16;
     let mut name_parts = Vec::new();
     let mut remaining = packet;
@@ -195,7 +260,7 @@ fn parse_resource_name(packet: Span) -> IResult<Span, DomainName> {
     Ok((remaining, labels))
 }
 
-fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
+fn parse_record_type(packet: Span) -> ParseResult<RecordType> {
     map(be_u16, |rtype| match rtype {
         1 => RecordType::A,
         2 => RecordType::NS,
@@ -206,46 +271,51 @@ fn parse_record_type(packet: Span) -> IResult<Span, RecordType> {
     .parse(packet)
 }
 
-fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> IResult<Span, RecordData> {
+fn parse_record_data(packet: Span, rdlength: u16, r_type: RecordType) -> ParseResult<RecordData> {
     match r_type {
         RecordType::A => {
-            // TODO use `context` and `VerboseError`
-            map(verify(be_u32, |_| rdlength == 4), |rdata: u32| {
+            if rdlength != 4 {
+                return Err(nom::Err::Failure(DnsParseError::InvalidRdlength {
+                    expected: 4,
+                    actual: rdlength,
+                    record_type: r_type,
+                    input: packet,
+                }));
+            }
+            map(be_u32, |rdata: u32| {
                 RecordData::AddressData(Ipv4Addr::from(rdata).into())
             })
             .parse(packet)
         }
-        RecordType::AAAA => map_res(
-            verify(take(16u8), |_| rdlength == 16),
-            |rdata: Span| -> Result<RecordData, Error<Span>> {
-                let parsed_addr = u128::from_be_bytes(
-                    rdata
-                        .fragment()
-                        .to_vec()
-                        .try_into()
-                        .expect("Can convert to IPv6 address to u128"),
-                );
-                Ok(RecordData::AddressData(Ipv6Addr::from(parsed_addr).into()))
-            },
-        )
-        .parse(packet),
+        RecordType::AAAA => {
+            if rdlength != 16 {
+                return Err(nom::Err::Failure(DnsParseError::InvalidRdlength {
+                    expected: 4,
+                    actual: rdlength,
+                    record_type: r_type,
+                    input: packet,
+                }));
+            }
+
+            map(be_u128, |rdata: u128| {
+                RecordData::AddressData(Ipv6Addr::from(rdata).into())
+            })
+            .parse(packet)
+        }
         RecordType::NS => {
             let (remaining, domain_name) = parse_resource_name(packet)?;
             Ok((remaining, RecordData::NameServerData(domain_name)))
         }
-        RecordType::OPT | RecordType::UNSUPPORTED(_) => map_res(
-            take(rdlength),
-            |rdata: Span| -> Result<RecordData, Error<Span>> {
-                Ok(RecordData::Unsupported(rdata.to_vec()))
-            },
-        )
+        RecordType::OPT | RecordType::UNSUPPORTED(_) => map(take(rdlength), |rdata: Span| {
+            RecordData::Unsupported(rdata.to_vec())
+        })
         .parse(packet),
     }
 }
 
-fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
+fn parse_compressed_label(packet: Span) -> ParseResult<DomainName> {
     // Grab the full offset, which is the next two bytes
-    let (remaining, mut name_offset) = be_u16(packet)?;
+    let (remaining, mut name_offset) = be_u16(packet.clone())?;
 
     // Remove the two high bits to get the actual offset
     name_offset = name_offset & !((COMPRESSION_MASK as u16) << 8);
@@ -256,10 +326,15 @@ fn parse_compressed_label(packet: Span) -> IResult<Span, DomainName> {
 
     match labels {
         Some(labels) => Ok((remaining, labels)),
-        None => Err(nom::Err::Failure(Error::new(remaining, ErrorKind::Verify))),
+        None => Err(nom::Err::Failure(DnsParseError::InvalidCompressionOffset {
+            offset: name_offset,
+            input: packet,
+        })),
     }
 }
 
+// This method returns an option, not an offset so that its caller can include the full packet in
+// any error messages it needs to create due to invalid offsets.
 fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<DomainName> {
     let Some((label_offset, label)) = ctx.label_cache.range(..=offset).next_back() else {
         // If we don't have a valid offset, return None
@@ -295,15 +370,14 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
     // Add to the cache; it's likely that other parts of the answer might use this
     ctx.label_cache.insert(offset, offset_label.clone());
 
-    return Some(offset_label);
+    Some(offset_label)
 }
 
 /// Given a packet where the next byte is the start of a label (label length),
 /// parse that part of the label and return a String.
-fn parse_literal_label(packet: Span) -> IResult<Span, String> {
+fn parse_literal_label(packet: Span) -> ParseResult<String> {
     let (remaining, name_len) = be_u8(packet)?;
 
-    // TODO check error here
     map_res(take(name_len), |output: Span| {
         String::from_utf8(output.fragment().to_vec())
     })
