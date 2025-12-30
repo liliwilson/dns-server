@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use dashmap::DashMap;
 use tokio::net::UdpSocket;
 
 mod packet;
@@ -15,12 +16,15 @@ use crate::{
 };
 
 const DNS_PORT: u16 = 53;
+type DNSCache = Arc<DashMap<String, IpAddr>>;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let socket = Arc::new(UdpSocket::bind("127.0.0.1:8080").await?);
+    let cache: DNSCache = DashMap::new().into();
 
     let mut buf = [0; 4096];
+
     loop {
         let (bytes, src_addr) = socket.recv_from(&mut buf).await?;
         let packet = &buf[..bytes];
@@ -36,9 +40,10 @@ async fn main() -> std::io::Result<()> {
                     let query_name = question.labels.to_string();
                     let query_id = parsed.header.id;
                     let socket_clone = Arc::clone(&socket);
+                    let cache_clone = Arc::clone(&cache);
 
                     tokio::spawn(async move {
-                        let address = send_query(query_name).await;
+                        let address = send_query(query_name.clone(), cache_clone).await;
                         println!("\n\n\nAnswer: {address:?}");
 
                         let response_packet = match address {
@@ -103,7 +108,12 @@ fn root_servers() -> Vec<NameServer> {
     ]
 }
 
-async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
+async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr, DNSError> {
+    if let Some(addr) = dns_cache.get(&query_domain) {
+        println!("reading value for {query_domain:?} from cache: {addr:?}");
+        return Ok(*addr);
+    }
+
     let out_v4_socket = UdpSocket::bind("0.0.0.0:0").await?;
     let out_v6_socket = UdpSocket::bind("[::]:0").await?;
 
@@ -124,7 +134,7 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
         let next_name_server = match &name_server {
             NameServer::IPAddress(ip) => ip,
             NameServer::DomainName(name) => {
-                &Box::pin(send_query(name.clone())).await?
+                &Box::pin(send_query(name.clone(), Arc::clone(&dns_cache))).await?
             }
         };
 
@@ -142,9 +152,10 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
 
         // If we have an answer and can get an IP address from it, return it
         if parsed_packet.has_answer()
-            && let RecordData::Address(ipaddr) = &parsed_packet.answers[0].rdata
+            && let RecordData::Address(addr) = &parsed_packet.answers[0].rdata
         {
-            return Ok(*ipaddr);
+            dns_cache.insert(query_domain, *addr);
+            return Ok(*addr);
         }
 
         let nses = parsed_packet.get_next_name_servers();
@@ -158,6 +169,7 @@ async fn send_query(query_domain: String) -> Result<IpAddr, DNSError> {
             let new = match ns_addr {
                 Some(addr) => {
                     if ns.to_string() == query_domain {
+                        dns_cache.insert(query_domain, *addr);
                         return Ok(*addr);
                     }
 

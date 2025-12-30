@@ -19,7 +19,8 @@ to benchmark:
 
 ### MAIN NEXT UP
 - tidy what i have
-- add persistence + caching
+- add cache with TTL
+- persist the cache
 - later [ benchmarking w criterion ]
 
 ### longer term TODO
@@ -27,9 +28,8 @@ to benchmark:
 - [x] support messaging 8.8.8.8 with norecurse on
 - [ ] add caching
 - [ ] persist cache
-- [ ] add retry logic
+- [ ] add retry logic / load balance between root servers
 - [ ] move to tcp? 
-- [ ] edns
 - [ ] dnssec? 
 - [ ] cname?
 - [ ] performance?
