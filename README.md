@@ -19,6 +19,7 @@ to benchmark:
 
 ### MAIN NEXT UP
 - tidy what i have
+- support CNAME
 - persist the cache?
 - later [ benchmarking w criterion ]
 

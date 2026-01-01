@@ -162,20 +162,25 @@ async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr,
         let (_, parsed_packet) = parse_packet(Span::new_extra(&buf[..bytes], ParseContext::new()))?;
 
         // If we have an answer and can get an IP address from it, return it
-        if parsed_packet.has_answer()
-            && let (RecordData::Address(addr), ttl) = (
-                &parsed_packet.answers[0].rdata,
-                parsed_packet.answers[0].ttl,
-            )
-        {
-            dns_cache.insert(
-                query_domain,
-                CachedAddr {
-                    addr: *addr,
-                    expiration_time: SystemTime::now() + Duration::from_secs(ttl as u64),
-                },
-            );
-            return Ok(*addr);
+        if parsed_packet.has_answer() {
+            let answer: Option<(IpAddr, u32)> = parsed_packet.answers.iter().find_map(|answer| {
+                if let RecordData::Address(addr) = answer.rdata {
+                    Some((addr, answer.ttl))
+                } else {
+                    None
+                }
+            });
+
+            if let Some((addr, ttl)) = answer {
+                dns_cache.insert(
+                    query_domain,
+                    CachedAddr {
+                        addr,
+                        expiration_time: SystemTime::now() + Duration::from_secs(ttl as u64),
+                    },
+                );
+                return Ok(addr);
+            }
         }
 
         let nses = parsed_packet.get_next_name_servers();
