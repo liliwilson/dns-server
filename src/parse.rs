@@ -235,7 +235,7 @@ fn parse_resource_name(packet: Span) -> ParseResult<DomainName> {
     if (offset & COMPRESSION_MASK) == COMPRESSION_MASK {
         let (output, extra) = parse_compressed_label(remaining)?;
         remaining = output;
-        name_parts.extend(extra.iter().cloned()); // TODO verify
+        name_parts.extend(Arc::unwrap_or_clone(extra.0)); // TODO verify
     } else {
         // consume the null terminator for the literal label
         let (output, _) = be_u8(remaining)?;
@@ -246,7 +246,7 @@ fn parse_resource_name(packet: Span) -> ParseResult<DomainName> {
 
     {
         let mut ctx = remaining.get_context_mut();
-        ctx.label_cache.insert(name_offset, labels.clone());
+        ctx.label_cache.insert(name_offset, labels.arc_clone());
     }
 
     Ok((remaining, labels))
@@ -326,7 +326,7 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
 
     // If we have an exact match in the cache, return it
     if label_offset == &offset {
-        return Some(label.clone());
+        return Some(label.arc_clone());
     }
 
     // Otherwise if we don't have key explicitly, it's a sub-part of another label
@@ -351,7 +351,7 @@ fn get_label_from_cache(mut ctx: RefMut<ParseContext>, offset: u16) -> Option<Do
     }
 
     // Add to the cache; it's likely that other parts of the answer might use this
-    ctx.label_cache.insert(offset, offset_label.clone());
+    ctx.label_cache.insert(offset, offset_label.arc_clone());
 
     Some(offset_label)
 }
@@ -518,8 +518,8 @@ impl PacketBuilder {
                 IpAddr::V4(ipv4_addr) => self.extend(&ipv4_addr.octets()),
                 IpAddr::V6(ipv6_addr) => self.extend(&ipv6_addr.octets()),
             },
-            RecordData::NameServer(items) => self.build_domain_name(items.clone()),
-            RecordData::Opt => {} // Don't add anything here for opts
+            RecordData::NameServer(domain_name) => self.build_domain_name(domain_name.arc_clone()),
+            RecordData::Opt => {}
             RecordData::Unsupported { rdata, r_type: _ } => {
                 self.extend(rdata);
             }

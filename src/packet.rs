@@ -37,7 +37,7 @@ pub struct Header {
 
 // We use an `Arc` here because a label could be shared across multiple questions/answers due to
 // compression
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Debug, PartialEq, Default)]
 pub struct DomainName(pub Arc<Vec<String>>);
 
 impl Display for DomainName {
@@ -66,6 +66,12 @@ impl DomainName {
         // Add 1 to the length of each label for the length separator, then add one to the end for
         // the root terminator
         self.iter().map(|label| label.len() as u16 + 1).sum::<u16>() + 1
+    }
+
+    /// Clone a DomainName by cloning the underlying `Arc`.
+    /// Helper method for clarity that this is a cheap clone.
+    pub fn arc_clone(&self) -> Self {
+        DomainName(self.0.clone())
     }
 }
 
@@ -173,7 +179,7 @@ impl Packet {
                 ar_count: 0,
             },
             questions: vec![Question {
-                labels: domain_name.clone(),
+                labels: domain_name.arc_clone(),
                 q_type: 1,
                 q_class: 1,
             }],
@@ -233,6 +239,7 @@ impl Packet {
             .filter_map(|ns| match &ns.rdata {
                 RecordData::Address(_) => None,
                 RecordData::NameServer(items) => Some(items.clone()), // TODO yuck
+                RecordData::NameServer(items) => Some(items.arc_clone()),
                 RecordData::Opt
                 | RecordData::Unsupported {
                     rdata: _,

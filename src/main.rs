@@ -42,7 +42,7 @@ async fn main() -> std::io::Result<()> {
             Ok((_remaining, parsed)) => match parsed.questions.first() {
                 Some(question) => {
                     // Clone variables so we can move them to the new task
-                    let query_labels = question.labels.clone();
+                    let query_labels = question.labels.arc_clone();
                     let query_name = question.labels.to_string();
                     let query_id = parsed.header.id;
                     let socket_clone = Arc::clone(&socket);
@@ -53,10 +53,10 @@ async fn main() -> std::io::Result<()> {
                         println!("\n\n\nAnswer: {address:?}");
 
                         let response_packet = match address {
-                            Ok(a) => Packet::new_answer(query_id, query_labels.clone(), a),
+                            Ok(a) => Packet::new_answer(query_id, query_labels.arc_clone(), a),
                             Err(e) => {
                                 println!("DNS lookup error: {e:?}");
-                                Packet::new_not_found(query_id, query_labels.clone())
+                                Packet::new_not_found(query_id, query_labels.arc_clone())
                             }
                         };
 
@@ -190,7 +190,7 @@ async fn send_query(query_domain: String, dns_cache: DNSCache) -> Result<IpAddr,
 
         println!("next ns {:?}", nses);
         for ns in nses {
-            let ns_data = parsed_packet.get_name_server_address(ns.clone());
+            let ns_data = parsed_packet.get_name_server_address(ns.arc_clone());
             let new = match ns_data {
                 Some((addr, ttl)) => {
                     if ns.to_string() == query_domain {
