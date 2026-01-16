@@ -1,35 +1,50 @@
-# i <3 dns.
+# dns
 
-going to try DIYing it!
+Recursive DNS resolver in Rust. Starts from root servers, iteratively follows referrals, caches results with TTL.
 
-## what i am using as resources
+## How it works
 
-packet structure:
-- https://mislove.org/teaching/cs4700/spring11/handouts/project1-primer.pdf
+1. Receives DNS query on UDP port 8080
+2. Starts at root nameserver (198.41.0.4)
+3. Follows NS referrals down the hierarchy until answer found
+4. Caches IPs with TTL, concurrent-safe via `DashMap`
+5. Returns A record to client
 
-to test:
-- `cargo t` for my own tests
-- `cargo r` and then in a separate tab running `dig @127.0.0.1 -p 8080 example.com`
+## Usage
 
-to benchmark:
-- `./bench/run_benchmark.sh` will run three types of workflows (random uncached queries, things that should benefit from caching, and parallel requests)
-- to run just a subset of these, you can run `./bench/run_benchmark.sh --tests cached,parallel`
+```bash
+# start server
+cargo r
 
-## todo list
+# query (from another terminal)
+dig @127.0.0.1 -p 8080 example.com
+```
 
-### MAIN NEXT UP
-- tidy what i have
-- support CNAME
-- persist the cache?
-- later [ benchmarking w criterion ]
+## Testing
 
-### longer term TODO
-- [x] message 8.8.8.8 with a query {decode and re-encode the packet}
-- [x] support messaging 8.8.8.8 with norecurse on
-- [x] add caching
-- [ ] persist cache
-- [ ] add retry logic / load balance between root servers
-- [ ] move to tcp? 
-- [ ] dnssec? 
-- [ ] cname?
-- [ ] performance?
+```bash
+cargo t                                        # unit tests
+./bench/run_benchmark.sh                       # all benchmarks
+./bench/run_benchmark.sh --tests cached,parallel  # specific benchmarks
+```
+
+## Dependencies
+
+- `tokio` - async runtime
+- `nom` - packet parsing
+- `dashmap` - concurrent cache
+
+## Resources
+
+- [DNS packet structure primer](https://mislove.org/teaching/cs4700/spring11/handouts/project1-primer.pdf)
+
+## TODO
+
+- [x] packet encode/decode
+- [x] iterative resolution
+- [x] TTL-based caching
+- [ ] CNAME following
+- [ ] cache persistence
+- [ ] root server failover
+- [ ] TCP fallback
+- [ ] DNSSEC
